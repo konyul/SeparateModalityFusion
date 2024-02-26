@@ -1,17 +1,32 @@
 _base_ = [
-    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
+    '../bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
 ]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 input_modality = dict(use_lidar=True, use_camera=True)
 backend_args = None
 
+beam_reduction=False
+spatial_misalignment=False
+lidar_stuck=False
+camera_stuck=False
+limited_fov=False
+object_failure=True
+camera_view_drop=False
+if camera_view_drop==True:
+    mean=[0,0,0]
+    std=[1,1,1]
+else:
+    mean=[123.675, 116.28, 103.53]
+    std=[58.395, 57.12, 57.375]  
+
 model = dict(
     type='BEVFusion',
-    freeze_img=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
+        # mean=[123.675, 116.28, 103.53],
+        # std=[58.395, 57.12, 57.375],
+        mean=mean,
+        std=std,
         bgr_to_rgb=False),
     img_backbone=dict(
         type='mmdet.SwinTransformer',
@@ -56,24 +71,7 @@ model = dict(
         dbound=[1.0, 60.0, 0.5],
         downsample=2),
     fusion_layer=dict(
-        type='DeformableTransformer',
-        mask_freq=0.25,
-        mask_ratio=0.5,
-        loss_weight=1,
-        d_model=256,
-        nheads=8,
-        num_encoder_layers=4,
-        num_decoder_layers=0,
-        dim_feedforward=1024,
-        dropout=0.1,
-        activation="relu",
-        return_intermediate_dec=True,
-        num_feature_levels=1,
-        dec_n_points=4,
-        enc_n_points=4,
-        two_stage=False,
-        num_queries=300
-            ))
+        type='ModalitySpecificLocalCrossAttentionMask', in_channels=[80, 256], out_channels=256))
 
 train_pipeline = [
     dict(
@@ -155,13 +153,15 @@ test_pipeline = [
         type='BEVLoadMultiViewImageFromFiles',
         to_float32=True,
         color_type='color',
-        backend_args=backend_args),
+        backend_args=backend_args,
+        camera_view_drop=camera_view_drop),
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
         use_dim=5,
-        backend_args=backend_args),
+        backend_args=backend_args,
+        reduce_beams=beam_reduction),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=9,
@@ -169,7 +169,11 @@ test_pipeline = [
         use_dim=5,
         pad_empty_sweeps=True,
         remove_close=True,
-        backend_args=backend_args),
+        backend_args=backend_args,
+        reduce_beams=beam_reduction,
+        limited_fov=limited_fov),
+    dict(type='Randomdropforeground',
+        object_failure=object_failure),
     dict(
         type='ImageAug3D',
         final_dim=[256, 704],
@@ -191,11 +195,20 @@ test_pipeline = [
         ])
 ]
 
+if object_failure:
+    test_pipeline.insert(3,
+    dict(
+        type='LoadAnnotations3D',
+        with_bbox_3d=True,
+        with_label_3d=False,
+        with_attr_label=False))
+
+
 train_dataloader = dict(
     dataset=dict(
         dataset=dict(pipeline=train_pipeline, modality=input_modality)))
 val_dataloader = dict(
-    dataset=dict(pipeline=test_pipeline, modality=input_modality))
+    dataset=dict(pipeline=test_pipeline, modality=input_modality, spatial_misalignment=spatial_misalignment, lidar_stuck=lidar_stuck, camera_stuck=camera_stuck, object_failure=object_failure))
 test_dataloader = val_dataloader
 
 param_scheduler = [
@@ -254,4 +267,3 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 load_from = './pretrained/convert_weight.pth'
-find_unused_parameters=True
