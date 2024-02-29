@@ -2728,3 +2728,31 @@ class Randomdropforeground(BaseTransform):
         repr_str = self.__class__.__name__
         repr_str += ' fore_drop_rate={})'.format(self.drop_rate)
         return repr_str
+    
+    
+
+@TRANSFORMS.register_module()
+class Randomdroppoints(BaseTransform):
+    def __init__(self, random_drop_points):
+        self.random_drop_points=random_drop_points
+        self.drop_rate=random_drop_points
+        print('drop points, ', self.random_drop_points)
+
+    def transform(self, input_dict):
+        if not self.random_drop_points:
+            return input_dict
+        points = input_dict['points']
+        N = points.shape[0]
+        idx = torch.randperm(N)
+        points = points[idx]
+        num_points = int(N*self.drop_rate)
+        points = points[:num_points]
+        input_dict['points'] = points
+        return input_dict
+
+
+    def __repr__(self):
+        """str: Return a string that describes the module."""
+        repr_str = self.__class__.__name__
+        repr_str += ' fore_drop_rate={})'.format(self.drop_rate)
+        return repr_str

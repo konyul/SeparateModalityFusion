@@ -14,7 +14,7 @@ from mmdet3d.registry import MODELS
 from mmdet3d.structures import Det3DDataSample
 from mmdet3d.utils import OptConfigType, OptMultiConfig, OptSampleList
 from .ops import Voxelization
-
+import open3d as o3d
 
 @MODELS.register_module()
 class BEVFusion(Base3DDetector):
