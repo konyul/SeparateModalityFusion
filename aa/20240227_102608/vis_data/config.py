@@ -1,6 +1,6 @@
 auto_scale_lr = dict(base_batch_size=8, enable=False)
 backend_args = None
-beam_reduction = False
+beam_reduction = True
 camera_stuck = False
 camera_view_drop = False
 class_names = [
@@ -100,7 +100,7 @@ input_modality = dict(use_camera=True, use_lidar=True)
 launcher = 'none'
 lidar_stuck = False
 limited_fov = False
-load_from = 'point_masking_test_ckpt/bevfusion_baseline.pth'
+load_from = 'bevfusion_714.pth'
 log_level = 'INFO'
 log_processor = dict(by_epoch=True, type='LogProcessor', window_size=50)
 lr = 0.0001
@@ -295,10 +295,22 @@ model = dict(
             ],
             voxelize_reduce=True)),
     fusion_layer=dict(
-        in_channels=[
-            80,
-            256,
-        ], out_channels=256, type='ConvFuser'),
+        activation='relu',
+        d_model=256,
+        dec_n_points=4,
+        dim_feedforward=1024,
+        dropout=0.1,
+        enc_n_points=4,
+        mask_freq=0.25,
+        mask_ratio=0.5,
+        nheads=8,
+        num_decoder_layers=0,
+        num_encoder_layers=4,
+        num_feature_levels=1,
+        num_queries=300,
+        return_intermediate_dec=True,
+        two_stage=False,
+        type='DeformableTransformer'),
     img_backbone=dict(
         attn_drop_rate=0.0,
         convert_weights=True,
@@ -518,7 +530,6 @@ point_cloud_range = [
     54.0,
     3.0,
 ]
-random_drop_points = True
 resume = False
 spatial_misalignment = False
 std = [
@@ -570,7 +581,7 @@ test_dataloader = dict(
                 backend_args=None,
                 coord_type='LIDAR',
                 load_dim=5,
-                reduce_beams=False,
+                reduce_beams=True,
                 type='LoadPointsFromFile',
                 use_dim=5),
             dict(
@@ -578,13 +589,12 @@ test_dataloader = dict(
                 limited_fov=False,
                 load_dim=5,
                 pad_empty_sweeps=True,
-                reduce_beams=False,
+                reduce_beams=True,
                 remove_close=True,
                 sweeps_num=9,
                 type='LoadPointsFromMultiSweeps',
                 use_dim=5),
             dict(object_failure=False, type='Randomdropforeground'),
-            dict(random_drop_points=True, type='Randomdroppoints'),
             dict(
                 bot_pct_lim=[
                     0.0,
@@ -662,7 +672,7 @@ test_pipeline = [
         backend_args=None,
         coord_type='LIDAR',
         load_dim=5,
-        reduce_beams=False,
+        reduce_beams=True,
         type='LoadPointsFromFile',
         use_dim=5),
     dict(
@@ -670,13 +680,12 @@ test_pipeline = [
         limited_fov=False,
         load_dim=5,
         pad_empty_sweeps=True,
-        reduce_beams=False,
+        reduce_beams=True,
         remove_close=True,
         sweeps_num=9,
         type='LoadPointsFromMultiSweeps',
         use_dim=5),
     dict(object_failure=False, type='Randomdropforeground'),
-    dict(random_drop_points=True, type='Randomdroppoints'),
     dict(
         bot_pct_lim=[
             0.0,
@@ -1079,7 +1088,7 @@ val_dataloader = dict(
                 backend_args=None,
                 coord_type='LIDAR',
                 load_dim=5,
-                reduce_beams=False,
+                reduce_beams=True,
                 type='LoadPointsFromFile',
                 use_dim=5),
             dict(
@@ -1087,13 +1096,12 @@ val_dataloader = dict(
                 limited_fov=False,
                 load_dim=5,
                 pad_empty_sweeps=True,
-                reduce_beams=False,
+                reduce_beams=True,
                 remove_close=True,
                 sweeps_num=9,
                 type='LoadPointsFromMultiSweeps',
                 use_dim=5),
             dict(object_failure=False, type='Randomdropforeground'),
-            dict(random_drop_points=True, type='Randomdroppoints'),
             dict(
                 bot_pct_lim=[
                     0.0,
@@ -1174,4 +1182,4 @@ voxel_size = [
     0.075,
     0.2,
 ]
-work_dir = 'debug'
+work_dir = 'aa'

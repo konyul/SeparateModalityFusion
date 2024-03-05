@@ -1,8 +1,5 @@
 auto_scale_lr = dict(base_batch_size=8, enable=False)
 backend_args = None
-beam_reduction = False
-camera_stuck = False
-camera_view_drop = False
 class_names = [
     'car',
     'truck',
@@ -96,19 +93,13 @@ env_cfg = dict(
     cudnn_benchmark=False,
     dist_cfg=dict(backend='nccl'),
     mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0))
+find_unused_parameters = True
 input_modality = dict(use_camera=True, use_lidar=True)
 launcher = 'none'
-lidar_stuck = False
-limited_fov = False
-load_from = 'point_masking_test_ckpt/bevfusion_baseline.pth'
+load_from = 'bevfusion_714.pth'
 log_level = 'INFO'
 log_processor = dict(by_epoch=True, type='LogProcessor', window_size=50)
 lr = 0.0001
-mean = [
-    123.675,
-    116.28,
-    103.53,
-]
 metainfo = dict(classes=[
     'car',
     'truck',
@@ -294,11 +285,25 @@ model = dict(
                 0.2,
             ],
             voxelize_reduce=True)),
+    freeze_img=True,
     fusion_layer=dict(
-        in_channels=[
-            80,
-            256,
-        ], out_channels=256, type='ConvFuser'),
+        activation='relu',
+        d_model=256,
+        dec_n_points=4,
+        dim_feedforward=1024,
+        dropout=0.1,
+        enc_n_points=4,
+        loss_weight=1,
+        mask_freq=0.25,
+        mask_ratio=0.5,
+        nheads=8,
+        num_decoder_layers=0,
+        num_encoder_layers=4,
+        num_feature_levels=1,
+        num_queries=300,
+        return_intermediate_dec=True,
+        two_stage=False,
+        type='DeformableTransformer'),
     img_backbone=dict(
         attn_drop_rate=0.0,
         convert_weights=True,
@@ -475,7 +480,6 @@ model = dict(
             10.0,
             20.0,
         ]))
-object_failure = False
 optim_wrapper = dict(
     clip_grad=dict(max_norm=35, norm_type=2),
     optimizer=dict(lr=0.0002, type='AdamW', weight_decay=0.01),
@@ -518,14 +522,7 @@ point_cloud_range = [
     54.0,
     3.0,
 ]
-random_drop_points = True
 resume = False
-spatial_misalignment = False
-std = [
-    58.395,
-    57.12,
-    57.375,
-]
 test_cfg = dict()
 test_dataloader = dict(
     batch_size=1,
@@ -533,7 +530,6 @@ test_dataloader = dict(
         ann_file='nuscenes_infos_val.pkl',
         backend_args=None,
         box_type_3d='LiDAR',
-        camera_stuck=False,
         data_prefix=dict(
             CAM_BACK='samples/CAM_BACK',
             CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
@@ -544,7 +540,6 @@ test_dataloader = dict(
             pts='samples/LIDAR_TOP',
             sweeps='sweeps/LIDAR_TOP'),
         data_root='data/nuscenes/',
-        lidar_stuck=False,
         metainfo=dict(classes=[
             'car',
             'truck',
@@ -558,11 +553,9 @@ test_dataloader = dict(
             'traffic_cone',
         ]),
         modality=dict(use_camera=True, use_lidar=True),
-        object_failure=False,
         pipeline=[
             dict(
                 backend_args=None,
-                camera_view_drop=False,
                 color_type='color',
                 to_float32=True,
                 type='BEVLoadMultiViewImageFromFiles'),
@@ -570,21 +563,16 @@ test_dataloader = dict(
                 backend_args=None,
                 coord_type='LIDAR',
                 load_dim=5,
-                reduce_beams=False,
                 type='LoadPointsFromFile',
                 use_dim=5),
             dict(
                 backend_args=None,
-                limited_fov=False,
                 load_dim=5,
                 pad_empty_sweeps=True,
-                reduce_beams=False,
                 remove_close=True,
                 sweeps_num=9,
                 type='LoadPointsFromMultiSweeps',
                 use_dim=5),
-            dict(object_failure=False, type='Randomdropforeground'),
-            dict(random_drop_points=True, type='Randomdroppoints'),
             dict(
                 bot_pct_lim=[
                     0.0,
@@ -638,7 +626,6 @@ test_dataloader = dict(
                 ],
                 type='Pack3DDetInputs'),
         ],
-        spatial_misalignment=False,
         test_mode=True,
         type='NuScenesDataset'),
     drop_last=False,
@@ -654,7 +641,6 @@ test_evaluator = dict(
 test_pipeline = [
     dict(
         backend_args=None,
-        camera_view_drop=False,
         color_type='color',
         to_float32=True,
         type='BEVLoadMultiViewImageFromFiles'),
@@ -662,21 +648,16 @@ test_pipeline = [
         backend_args=None,
         coord_type='LIDAR',
         load_dim=5,
-        reduce_beams=False,
         type='LoadPointsFromFile',
         use_dim=5),
     dict(
         backend_args=None,
-        limited_fov=False,
         load_dim=5,
         pad_empty_sweeps=True,
-        reduce_beams=False,
         remove_close=True,
         sweeps_num=9,
         type='LoadPointsFromMultiSweeps',
         use_dim=5),
-    dict(object_failure=False, type='Randomdropforeground'),
-    dict(random_drop_points=True, type='Randomdroppoints'),
     dict(
         bot_pct_lim=[
             0.0,
@@ -1042,7 +1023,6 @@ val_dataloader = dict(
         ann_file='nuscenes_infos_val.pkl',
         backend_args=None,
         box_type_3d='LiDAR',
-        camera_stuck=False,
         data_prefix=dict(
             CAM_BACK='samples/CAM_BACK',
             CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
@@ -1053,7 +1033,6 @@ val_dataloader = dict(
             pts='samples/LIDAR_TOP',
             sweeps='sweeps/LIDAR_TOP'),
         data_root='data/nuscenes/',
-        lidar_stuck=False,
         metainfo=dict(classes=[
             'car',
             'truck',
@@ -1067,11 +1046,9 @@ val_dataloader = dict(
             'traffic_cone',
         ]),
         modality=dict(use_camera=True, use_lidar=True),
-        object_failure=False,
         pipeline=[
             dict(
                 backend_args=None,
-                camera_view_drop=False,
                 color_type='color',
                 to_float32=True,
                 type='BEVLoadMultiViewImageFromFiles'),
@@ -1079,21 +1056,16 @@ val_dataloader = dict(
                 backend_args=None,
                 coord_type='LIDAR',
                 load_dim=5,
-                reduce_beams=False,
                 type='LoadPointsFromFile',
                 use_dim=5),
             dict(
                 backend_args=None,
-                limited_fov=False,
                 load_dim=5,
                 pad_empty_sweeps=True,
-                reduce_beams=False,
                 remove_close=True,
                 sweeps_num=9,
                 type='LoadPointsFromMultiSweeps',
                 use_dim=5),
-            dict(object_failure=False, type='Randomdropforeground'),
-            dict(random_drop_points=True, type='Randomdroppoints'),
             dict(
                 bot_pct_lim=[
                     0.0,
@@ -1147,7 +1119,6 @@ val_dataloader = dict(
                 ],
                 type='Pack3DDetInputs'),
         ],
-        spatial_misalignment=False,
         test_mode=True,
         type='NuScenesDataset'),
     drop_last=False,
@@ -1174,4 +1145,4 @@ voxel_size = [
     0.075,
     0.2,
 ]
-work_dir = 'debug'
+work_dir = 'aa'
