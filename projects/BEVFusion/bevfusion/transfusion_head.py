@@ -24,7 +24,7 @@ import math
 from .deformable_transformer import build_deforamble_transformer
 from .deformable_utils.position_encoding import PositionEmbeddingSine
 from .utils import NestedTensor
-
+import cv2
 def clip_sigmoid(x, eps=1e-4):
     y = torch.clamp(x.sigmoid_(), min=eps, max=1 - eps)
     return y
@@ -121,7 +121,17 @@ class DeformableTransformer(nn.Module):
         x = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, D))  # unshuffle
         return _x, x, mask
 
-    def forward(self, inputs: List[torch.Tensor]) -> torch.Tensor:
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        cv2.imwrite(f"max_image_feature_{idx}.jpg",max_image_feature)
+
+    def forward(self, inputs: List[torch.Tensor], fg_bg_mask_list) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
             residual = inputs[1]
@@ -156,12 +166,27 @@ class DeformableTransformer(nn.Module):
         if self.residual == 'concat':
             inputs[1] = self.P_integration(torch.cat((inputs[1], residual), dim=1))
         if mask_pts and inputs[1].requires_grad:
-            pts_feat = inputs[1].flatten(2).transpose(1, 2)
-            loss = (pts_feat - pts_target) ** 2
+            pts_feat = inputs[1].flatten(2).transpose(1, 2)         
+            if fg_bg_mask_list is not None:
+                device=inputs[0].device
+                fg_mask, fg_scale_mask, bg_scale_mask = fg_bg_mask_list
+                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.to(device), fg_scale_mask.to(device), bg_scale_mask.to(device)
+                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.permute(0, 1, 3, 2), fg_scale_mask.permute(0, 1, 3, 2), bg_scale_mask.permute(0, 1, 3, 2)
+                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.flatten(2).transpose(1,2), fg_scale_mask.flatten(2).transpose(1,2), bg_scale_mask.flatten(2).transpose(1,2)
+                fg_loss = (pts_feat - pts_target) ** 2 * fg_scale_mask
+                fg_loss = fg_loss / bs
+                bg_loss = (pts_feat - pts_target) ** 2 * bg_scale_mask
+                bg_loss = bg_loss / bs
+                loss = 6e-1 * fg_loss + 4e-2 * bg_loss
+            else:
+                loss = (pts_feat - pts_target) ** 2
             loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
             loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
             loss = self.loss_weight * loss
-            return self.conv(torch.cat(inputs, dim=1)), loss
+            if fg_bg_mask_list is not None:
+                return self.conv(torch.cat(inputs, dim=1)), loss, fg_loss, bg_loss
+            else:    
+                return self.conv(torch.cat(inputs, dim=1)), loss
         
         return self.conv(torch.cat(inputs, dim=1)), False
 
