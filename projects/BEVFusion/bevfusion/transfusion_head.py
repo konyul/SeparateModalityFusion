@@ -171,7 +171,7 @@ class DeformableTransformer(nn.Module):
                 device=inputs[0].device
                 fg_mask, fg_scale_mask, bg_scale_mask = fg_bg_mask_list
                 fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.to(device), fg_scale_mask.to(device), bg_scale_mask.to(device)
-                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.permute(0, 1, 3, 2), fg_scale_mask.permute(0, 1, 3, 2), bg_scale_mask.permute(0, 1, 3, 2)
+                # fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.permute(0, 1, 3, 2), fg_scale_mask.permute(0, 1, 3, 2), bg_scale_mask.permute(0, 1, 3, 2)
                 fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.flatten(2).transpose(1,2), fg_scale_mask.flatten(2).transpose(1,2), bg_scale_mask.flatten(2).transpose(1,2)
                 fg_loss = (pts_feat - pts_target) ** 2 * fg_scale_mask
                 fg_loss = fg_loss / bs
