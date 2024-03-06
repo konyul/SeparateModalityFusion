@@ -317,7 +317,7 @@ class BEVFusion(Base3DDetector):
         self,
         batch_inputs_dict,
         batch_input_metas,
-        fg_bg_mask_list,
+        fg_bg_mask_list=None,
         **kwargs,
     ):
         imgs = batch_inputs_dict.get('imgs', None)
@@ -353,7 +353,7 @@ class BEVFusion(Base3DDetector):
         features.append(pts_feature)
         if self.fusion_layer is not None:
             if 'mask_ratio' in self.fusion_layer.__dict__:
-                x, pts_loss = self.fusion_layer(features, fg_bg_mask_list)    
+                x, pts_loss = self.fusion_layer(features, fg_bg_mask_list)
             else:
                 x = self.fusion_layer(features)
                 pts_loss = None

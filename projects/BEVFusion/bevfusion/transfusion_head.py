@@ -183,10 +183,7 @@ class DeformableTransformer(nn.Module):
             loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
             loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
             loss = self.loss_weight * loss
-            if fg_bg_mask_list is not None:
-                return self.conv(torch.cat(inputs, dim=1)), loss, fg_loss, bg_loss
-            else:    
-                return self.conv(torch.cat(inputs, dim=1)), loss
+            return self.conv(torch.cat(inputs, dim=1)), loss
         
         return self.conv(torch.cat(inputs, dim=1)), False
 
