@@ -414,7 +414,8 @@ class BEVFusion(Base3DDetector):
 
             bg_scale_mask = np.zeros(H * W, dtype=float)
             bg_points_number = H * W - np.sum(fg_mask != 0)
-            bg_scale_mask[:] = 1.0 / bg_points_number
+            #bg_scale_mask[:] = 1.0 / bg_points_number
+            bg_scale_mask = abs(fg_mask-1)
 
             fg_mask = fg_mask.reshape(1, 1, H, W)
             fg_scale_mask = fg_scale_mask.reshape(1, 1, H, W)
@@ -442,7 +443,13 @@ class BEVFusion(Base3DDetector):
         if self.with_bbox_head:
             bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
         if pts_loss:
-            losses.update({'pts_loss':pts_loss})
+            if isinstance(pts_loss,list):
+                fg_loss = pts_loss[0]
+                bg_loss = pts_loss[1]
+                losses.update({'fg_loss':fg_loss})    
+                losses.update({'bg_loss':bg_loss})    
+            else:
+                losses.update({'pts_loss':pts_loss})
         if mask_loss is not None:
             losses.update({'mask_loss':mask_loss})
         losses.update(bbox_loss)

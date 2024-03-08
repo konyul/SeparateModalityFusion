@@ -169,21 +169,25 @@ class DeformableTransformer(nn.Module):
             pts_feat = inputs[1].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
                 device=inputs[0].device
-                fg_mask, fg_scale_mask, bg_scale_mask = fg_bg_mask_list
-                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.to(device), fg_scale_mask.to(device), bg_scale_mask.to(device)
-                # fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.permute(0, 1, 3, 2), fg_scale_mask.permute(0, 1, 3, 2), bg_scale_mask.permute(0, 1, 3, 2)
-                fg_mask, fg_scale_mask, bg_scale_mask = fg_mask.flatten(2).transpose(1,2), fg_scale_mask.flatten(2).transpose(1,2), bg_scale_mask.flatten(2).transpose(1,2)
-                fg_loss = (pts_feat - pts_target) ** 2 * fg_scale_mask
-                fg_loss = fg_loss / bs
-                bg_loss = (pts_feat - pts_target) ** 2 * bg_scale_mask
-                bg_loss = bg_loss / bs
-                loss = 6e-1 * fg_loss + 4e-2 * bg_loss
+                fg_mask, fg_scale_mask, bg_mask = fg_bg_mask_list
+                fg_mask, fg_scale_mask, bg_mask = fg_mask.to(device), fg_scale_mask.to(device), bg_mask.to(device)
+                fg_mask, fg_scale_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), fg_scale_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
+                fg_loss = (pts_feat - pts_target) ** 2 * fg_mask
+                bg_loss = (pts_feat - pts_target) ** 2 * bg_mask
+                bg_loss = 0.5 * bg_loss
+                bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
+                bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
+                fg_loss = self.loss_weight * fg_loss
+                bg_loss = self.loss_weight * bg_loss
+                return self.conv(torch.cat(inputs, dim=1)), [fg_loss, bg_loss]
             else:
                 loss = (pts_feat - pts_target) ** 2
-            loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-            loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
-            loss = self.loss_weight * loss
-            return self.conv(torch.cat(inputs, dim=1)), loss
+                loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+                loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
+                loss = self.loss_weight * loss
+                return self.conv(torch.cat(inputs, dim=1)), loss
         
         return self.conv(torch.cat(inputs, dim=1)), False
 
