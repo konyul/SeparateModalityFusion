@@ -169,12 +169,12 @@ class DeformableTransformer(nn.Module):
             pts_feat = inputs[1].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
                 device=inputs[0].device
-                fg_mask, fg_scale_mask, bg_mask = fg_bg_mask_list
-                fg_mask, fg_scale_mask, bg_mask = fg_mask.to(device), fg_scale_mask.to(device), bg_mask.to(device)
-                fg_mask, fg_scale_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), fg_scale_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
+                fg_mask, bg_mask = fg_bg_mask_list
+                fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
+                fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
                 fg_loss = (pts_feat - pts_target) ** 2 * fg_mask
                 bg_loss = (pts_feat - pts_target) ** 2 * bg_mask
-                bg_loss = 0.5 * bg_loss
+                bg_loss = 0.2 * bg_loss
                 bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
                 fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
                 fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches

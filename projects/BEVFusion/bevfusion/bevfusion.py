@@ -366,7 +366,7 @@ class BEVFusion(Base3DDetector):
 
         return x, mask_loss, pts_loss
 
-    def fg_scale_mask(self, batch_data_samples):
+    def fg_bg_mask(self, batch_data_samples):
             
         grid_size = torch.tensor([1440, 1440, 1])
         pc_range = torch.tensor([-54.0, -54.0, -5.0, 54.0, 54.0, 3.0])
@@ -392,8 +392,7 @@ class BEVFusion(Base3DDetector):
         coords = torch.as_tensor(coords, dtype=torch.float32, device=device)
         
         fg_masks = []
-        fg_scale_masks = []
-        bg_scale_masks = []
+        bg_masks = []
         
         for sample in batch_data_samples:
             boxes = sample.gt_instances_3d['bboxes_3d']
@@ -404,38 +403,24 @@ class BEVFusion(Base3DDetector):
             mask = box_np_ops.points_in_rbbox(points, boxes)
 
             fg_mask = mask.any(axis=-1).astype(float)
-            fg_points_indices, bbox_indices = np.nonzero(mask)
-
-            fg_points_indices, unique_indices = np.unique(fg_points_indices, return_index=True)
-            bbox_indices = bbox_indices[unique_indices]
-            fg_scale_mask = np.zeros(H * W, dtype=float)
-
-            fg_scale_mask[fg_points_indices] = 1.0 / (max(np.sum(fg_mask!=0), 1))
-
-            bg_scale_mask = np.zeros(H * W, dtype=float)
-            bg_points_number = H * W - np.sum(fg_mask != 0)
-            #bg_scale_mask[:] = 1.0 / bg_points_number
-            bg_scale_mask = abs(fg_mask-1)
+            bg_mask = abs(fg_mask-1)
 
             fg_mask = fg_mask.reshape(1, 1, H, W)
-            fg_scale_mask = fg_scale_mask.reshape(1, 1, H, W)
-            bg_scale_mask = bg_scale_mask.reshape(1, 1, H, W)
+            bg_mask = bg_mask.reshape(1, 1, H, W)
             fg_masks.append(torch.tensor(fg_mask))
-            fg_scale_masks.append(torch.tensor(fg_scale_mask))
-            bg_scale_masks.append(torch.tensor(bg_scale_mask))
+            bg_masks.append(torch.tensor(bg_mask))
 
         fg_mask = torch.cat(fg_masks, dim=0).float()
-        fg_scale_mask = torch.cat(fg_scale_masks, dim=0).float()
-        bg_scale_mask = torch.cat(bg_scale_masks, dim=0).float()
+        bg_mask = torch.cat(bg_masks, dim=0).float()
 
-        return [fg_mask, fg_scale_mask, bg_scale_mask]
+        return [fg_mask, bg_mask]
 
     def loss(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
              batch_data_samples: List[Det3DDataSample],
              **kwargs) -> List[Det3DDataSample]:
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         if self.sep_fg:
-            fg_bg_mask_list = self.fg_scale_mask(batch_data_samples)
+            fg_bg_mask_list = self.fg_bg_mask(batch_data_samples)
         else:
             fg_bg_mask_list = None
         feats, mask_loss, pts_loss = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list)

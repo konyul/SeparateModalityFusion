@@ -8,7 +8,6 @@ backend_args = None
 model = dict(
     type='BEVFusion',
     freeze_img=True,
-    sep_fg=False,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
@@ -57,24 +56,7 @@ model = dict(
         dbound=[1.0, 60.0, 0.5],
         downsample=2),
     fusion_layer=dict(
-        type='DeformableTransformer',
-        mask_freq=0.25,
-        mask_ratio=0.5,
-        loss_weight=1,
-        d_model=256,
-        nheads=8,
-        num_encoder_layers=4,
-        num_decoder_layers=0,
-        dim_feedforward=1024,
-        dropout=0.1,
-        activation="relu",
-        return_intermediate_dec=True,
-        num_feature_levels=1,
-        dec_n_points=4,
-        enc_n_points=4,
-        two_stage=False,
-        num_queries=300
-            ))
+        type='ModalitySpecificDecoderMask', in_channels=[80, 256], out_channels=256, num_layers=2))
 
 train_pipeline = [
     dict(
@@ -255,4 +237,3 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 load_from = './pretrained/convert_weight.pth'
-find_unused_parameters=True
