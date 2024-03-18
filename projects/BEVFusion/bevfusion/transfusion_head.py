@@ -60,7 +60,8 @@ class DeformableTransformer(nn.Module):
                     nn.GroupNorm(32, feat_channels),
                 )])        
         self.num_cross_attention_layers = kwargs.get('num_cross_attention_layers', False)
-        if self.num_cross_attention_layers:
+        self._nheads = kwargs.get('_nheads', False)
+        if self.num_cross_attention_layers or self._nheads:
             self.target_proj = nn.ModuleList([
                     nn.Sequential(
                         nn.Conv2d(target_channels, feat_channels, kernel_size=1),
@@ -77,7 +78,7 @@ class DeformableTransformer(nn.Module):
         for proj in self.input_proj:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
-        if self.num_cross_attention_layers:
+        if self.num_cross_attention_layers or self._nheads:
             for _proj in self.target_proj:
                 nn.init.xavier_uniform_(_proj[0].weight, gain=1)
                 nn.init.constant_(_proj[0].bias, 0)
@@ -148,7 +149,7 @@ class DeformableTransformer(nn.Module):
             src = inputs[1]
         s_proj = self.input_proj[0](src)
         target = inputs[0]
-        if self.num_cross_attention_layers:
+        if self.num_cross_attention_layers or self._nheads:
             t_proj = self.target_proj[0](target)
         else:
             t_proj = target
@@ -329,9 +330,7 @@ class ModalitySpecificDecoderMask(nn.Module):
         
         img_feat = img_feat + self.decoder_pos_embed_img
         for blk in self.decoder_blocks:
-            import pdb;pdb.set_trace()
             img_feat = blk(img_feat)
-        import pdb;pdb.set_trace()
         img_feat = self.decoder_norm(img_feat)
         # predictor projection
         img_feat = self.decoder_pred(img_feat)
