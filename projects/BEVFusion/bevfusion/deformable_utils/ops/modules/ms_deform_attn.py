@@ -136,6 +136,7 @@ class CMDeformAttn(nn.Module):
 
         self.im2col_step = 64
         self.d_model = d_model
+        self._dmodel = _nheads * d_model // n_heads
         self.n_levels = n_levels
         self.n_heads = n_heads
         self.n_points = n_points
@@ -143,8 +144,8 @@ class CMDeformAttn(nn.Module):
         self.sampling_offsets = nn.Linear(d_model, (n_heads + _nheads) * n_levels * n_points * 2)
         self.attention_weights = nn.Linear(d_model, (n_heads + _nheads) * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
-        self._value_proj = nn.Linear(d_model, d_model)
-        self.output_proj = nn.Linear(d_model, d_model)
+        self._value_proj = nn.Linear(d_model, self._dmodel)
+        self.output_proj = nn.Linear(d_model + self._dmodel, d_model)
 
         self._reset_parameters()
 
@@ -187,7 +188,7 @@ class CMDeformAttn(nn.Module):
             value1 = value1.masked_fill(input_padding_mask[..., None], float(0))
             value2 = value2.masked_fill(input_padding_mask[..., None], float(0))
         value1 = value1.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        value2 = value2.view(N, Len_in, self._nheads, self.d_model // self._nheads)
+        value2 = value2.view(N, Len_in, self._nheads, self._dmodel // self._nheads)
         sampling_offsets = self.sampling_offsets(query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels, self.n_points, 2)
         attention_weights = self.attention_weights(query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels * self.n_points)
         attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels, self.n_points)
@@ -207,6 +208,6 @@ class CMDeformAttn(nn.Module):
         attention_weights1, attention_weights2 = attention_weights[:,:,:8].contiguous(), attention_weights[:,:,8:].contiguous()
         output1 = MSDeformAttnFunction.apply(value1, input_spatial_shapes, input_level_start_index, sampling_locations1, attention_weights1, self.im2col_step)
         output2 = MSDeformAttnFunction.apply(value2, input_spatial_shapes, input_level_start_index, sampling_locations2, attention_weights2, self.im2col_step)
-        output = output1 + output2
+        output = torch.cat((output1, output2),-1)
         output = self.output_proj(output)
         return output

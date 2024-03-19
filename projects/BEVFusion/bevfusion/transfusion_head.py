@@ -4,6 +4,7 @@ from typing import List, Tuple
 
 import numpy as np
 import torch
+import random
 import torch.nn.functional as F
 from mmcv.cnn import ConvModule, build_conv_layer
 from mmdet.models.task_modules import (AssignResult, PseudoSampler,
@@ -36,6 +37,9 @@ class DeformableTransformer(nn.Module):
         super().__init__()
         self.mask_freq = kwargs.pop("mask_freq")
         self.mask_ratio = kwargs.pop("mask_ratio")
+        self.mask_method = kwargs.get('mask_method', 'point')
+        if 'patch' in self.mask_method:
+            self.patch_cfg = kwargs.get('patch_cfg', None)
         if kwargs.get('residual', False):
             self.residual = kwargs.pop("residual")
         else:
@@ -121,6 +125,82 @@ class DeformableTransformer(nn.Module):
         x_ = torch.cat([x_masked, pts_mask_tokens],dim=1)
         x = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, D))  # unshuffle
         return _x, x, mask
+    
+    def polar_pts_masking(self ,x):
+        _x = x.clone().detach()
+        BS, C, H, W = x.shape
+        cx, cy = W // 2, H // 2
+        #random_angle = int(random.choice(range(0, 181, 10)))
+        
+        
+        #mask_range = [+random_angle,-random_angle]
+
+        start_angle = int(random.choice(range(0,361,10)))
+        print(start_angle)
+        angle_range =30
+        end_angle = start_angle+angle_range 
+        Y, X = torch.meshgrid(torch.arange(H,device=x.device), torch.arange(W,device=x.device))
+
+        angles = torch.rad2deg(torch.atan2(Y-cy,X-cx))%360
+        
+        #mask = (angles >= mask_range[1]) & (angles <= mask_range[0]) # True or False
+        if start_angle+angle_range > 360:
+            mask = ((angles >= start_angle) | (angles < (end_angle%360)))
+        else:
+            mask = (angles >= start_angle) & (angles <= end_angle)
+        mask = mask.to(torch.int)
+        #mask = 1-mask
+        mask = mask.unsqueeze(0).unsqueeze(0).expand(BS, C, -1, -1) 
+        pts_mask = torch.mean(mask.float(), dim=1)
+        pts_mask = pts_mask.reshape(BS, -1)
+        
+        polar_masking = self.polar_mask_tokens.expand_as(x) 
+        x[mask==1] = polar_masking[mask==1]  
+        return _x,x,pts_mask
+    
+    def random_patch_masking(self, x):
+        B, D, W, H = x.shape
+        mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
+
+        mask = torch.zeros([B, W, H], device=x.device)
+        for b in range(B):
+            # pick size and number of patch
+            l_min, l_max = self.patch_cfg.len_min, self.patch_cfg.len_max
+            rand_s_l = torch.randint(l_min, l_max, (500,))
+            rand_s_l_sq = torch.cumsum(torch.square(rand_s_l), dim=0)
+            rand_n = (rand_s_l_sq > (W*H*self.mask_ratio)).nonzero()[0][0]
+
+            # masking patch
+            rand_x_l, rand_y_l = torch.randint(0, W, (rand_n, 1)), torch.randint(0, H, (rand_n, 1))
+            for rand_s, rand_x, rand_y in zip(rand_s_l, rand_x_l, rand_y_l):
+                x[b][:, rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = mask_tokens
+                mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
+
+        return x, mask.flatten(1)
+    
+    def grid_patch_masking(self, x):
+        B, D, W, H = x.shape
+        mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
+
+        mask = torch.zeros([B, W, H], device=x.device)
+        grid_res = self.patch_cfg.grid_res
+        grid_res_2 = W // grid_res
+        
+        for b in range(B):
+            # reshape mask to grid shap
+            grid_mask = mask[b].unfold(0, grid_res_2, grid_res_2).unfold(1, grid_res_2, grid_res_2)
+            grid_x = x[b].unfold(1, grid_res_2, grid_res_2).unfold(2, grid_res_2, grid_res_2)
+
+            # masking
+            half_grid_res = int(grid_res*grid_res*self.mask_ratio)
+            indices = torch.randperm(grid_res*grid_res)
+            mask_indices = indices[:half_grid_res]
+            rows = mask_indices // grid_res
+            cols = mask_indices % grid_res
+            grid_mask[rows, cols] = 1
+            grid_x[:, rows, cols] = mask_tokens.unsqueeze(-1).expand(D, half_grid_res, grid_res_2, grid_res_2)
+
+        return x, mask.flatten(1)
 
     def visualize_feat(self, bev_feat, idx):
         feat = bev_feat.cpu().detach().numpy()
@@ -141,10 +221,20 @@ class DeformableTransformer(nn.Module):
         mask_pts = prob < self.mask_freq
         
         if mask_pts and inputs[1].requires_grad:
-            bs, c, h, w = inputs[1].shape
-            pts_feat = inputs[1].flatten(2).transpose(1, 2)
-            pts_target, pts_feat, pts_mask = self.pts_masking(pts_feat)
-            src = pts_feat.view(bs,h,w,c).permute(0,3,1,2) # bs, c, h, w
+            if self.mask_method == 'point':
+                bs, c, h, w = inputs[1].shape
+                pts_feat = inputs[1].flatten(2).transpose(1, 2)
+                pts_target, pts_feat, pts_mask = self.pts_masking(pts_feat)
+                src = pts_feat.view(bs,h,w,c).permute(0,3,1,2) # bs, c, h, w
+            elif self.mask_method == 'random_patch':
+                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                src, pts_mask = self.random_patch_masking(inputs[1])
+            elif self.mask_method == 'grid_patch':
+                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                src, pts_mask = self.grid_patch_masking(inputs[1])
+            elif self.mask_method == 'polar_patch':
+                pts_feat = inputs[1]
+                pts_target , src, pts_mask =self.polar_pts_masking(pts_feat)
         else:
             src = inputs[1]
         s_proj = self.input_proj[0](src)
