@@ -17,11 +17,11 @@ from torch import nn, Tensor
 from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from .util.misc import inverse_sigmoid
-from .deformable_utils.ops.modules import MSDeformAttn, CMDeformAttn
+from .deformable_utils.ops.modules import MSDeformAttn, CMDeformAttn, CCDeformAttn
 
 
 class DeformableTransformer(nn.Module):
-    def __init__(self, d_model=256, nhead=8, _nheads=0,
+    def __init__(self, d_model=256, nhead=8, _nheads=0, fusion_method=False,
                  num_encoder_layers=6, num_cross_attention_layers=0, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
@@ -32,10 +32,11 @@ class DeformableTransformer(nn.Module):
         self.nhead = nhead
         self.two_stage = two_stage
         self.two_stage_num_proposals = two_stage_num_proposals
+        self.fusion_method = fusion_method
 
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, _nheads)
+                                                          num_feature_levels, nhead, enc_n_points, _nheads, fusion_method)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
         self.num_decoder_layers = num_decoder_layers
         if self.num_decoder_layers !=0:
@@ -162,7 +163,7 @@ class DeformableTransformer(nn.Module):
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         # encoder
-        if self._nheads != 0:
+        if self._nheads != 0 or self.fusion_method:
             memory = self.encoder([src_flatten, target_flatten], spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
         else:    
             memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
@@ -208,13 +209,16 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, _nheads=0):
+                 n_levels=4, n_heads=8, n_points=4, _nheads=0, fusion_method=False):
         super().__init__()
 
         # self attention
         self._nheads = _nheads
+        self.fusion_method = fusion_method
         if self._nheads != 0:
             self.self_attn = CMDeformAttn(d_model, n_levels, n_heads, n_points, _nheads)
+        elif self.fusion_method:
+            self.self_attn = CCDeformAttn(d_model, n_levels, n_heads, n_points, fusion_method)
         else:    
             self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
         self.dropout1 = nn.Dropout(dropout)
@@ -243,7 +247,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
             # cross attention
             target = src[1]
             src = src[0]
-            if self._nheads != 0:
+            if self._nheads != 0 or self.fusion_method:
                 src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, [src, target], spatial_shapes, level_start_index, padding_mask)
             else:
                 src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, target, spatial_shapes, level_start_index, padding_mask)
@@ -420,6 +424,7 @@ def build_deforamble_transformer(**kwargs):
         d_model=kwargs['d_model'],
         nhead=kwargs['nheads'],
         _nheads=kwargs.get('_nheads', 0),
+        fusion_method=kwargs.get("fusion_method", False),
         num_encoder_layers=kwargs['num_encoder_layers'],
         num_cross_attention_layers=kwargs.get('num_cross_attention_layers', 0),
         num_decoder_layers=kwargs['num_decoder_layers'],

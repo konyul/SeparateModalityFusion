@@ -428,15 +428,9 @@ class BEVFusion(Base3DDetector):
         if self.with_bbox_head:
             bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
         if pts_loss:
-            if isinstance(pts_loss,list):
-                fg_loss = pts_loss[0]
-                bg_loss = pts_loss[1]
-                losses.update({'fg_loss':fg_loss})    
-                losses.update({'bg_loss':bg_loss})    
-            else:
-                losses.update({'pts_loss':pts_loss})
+            if isinstance(pts_loss,dict):
+                losses.update(pts_loss) 
         if mask_loss is not None:
             losses.update({'mask_loss':mask_loss})
         losses.update(bbox_loss)
-
         return losses
