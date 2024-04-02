@@ -143,7 +143,8 @@ class Det3DDataset(BaseDataset):
             # used for showing variation of the number of instances before and
             # after through the pipeline
             self.show_ins_var = show_ins_var
-
+            if not self.test_mode:
+                self.num_ins_per_cat = {'car': 413318, 'truck': 72815, 'construction_vehicle': 11993, 'bus': 13163, 'trailer': 20701, 'barrier': 125095, 'motorcycle': 10109, 'bicycle': 9478, 'pedestrian': 185847, 'traffic_cone': 82362}
             # show statistics of this dataset
             print_log('-' * 30, 'current')
             print_log(f'The length of the dataset: {len(self)}', 'current')

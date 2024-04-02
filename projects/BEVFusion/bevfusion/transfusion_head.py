@@ -108,12 +108,16 @@ class DeformableTransformer(nn.Module):
         self.initialize_weights()
         
     def initialize_weights(self):
-        for proj in self.input_proj:
-            nn.init.xavier_uniform_(proj[0].weight, gain=1)
-            nn.init.constant_(proj[0].bias, 0)
-        for __proj in self._input_proj:
-            nn.init.xavier_uniform_(__proj[0].weight, gain=1)
-            nn.init.constant_(__proj[0].bias, 0)
+        if self.mask_pts:
+            for proj in self.input_proj:
+                nn.init.xavier_uniform_(proj[0].weight, gain=1)
+                nn.init.constant_(proj[0].bias, 0)
+            torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        if self.mask_img:
+            for __proj in self._input_proj:
+                nn.init.xavier_uniform_(__proj[0].weight, gain=1)
+                nn.init.constant_(__proj[0].bias, 0)
+            torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         if self.num_cross_attention_layers or self._nheads or self.fusion_method:
             for _proj in self.target_proj:
                 nn.init.xavier_uniform_(_proj[0].weight, gain=1)
@@ -122,8 +126,6 @@ class DeformableTransformer(nn.Module):
             for _proj_ in self._target_proj:
                 nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
                 nn.init.constant_(_proj_[0].bias, 0)
-        torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
-        torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -159,6 +161,16 @@ class DeformableTransformer(nn.Module):
                 mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
 
         return x, mask.flatten(1)
+    
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        cv2.imwrite(f"max_image_feature_{idx}.jpg",max_image_feature)
 
     def forward(self, inputs: List[torch.Tensor], fg_bg_mask_list) -> torch.Tensor:
         # image feature, points feature
@@ -170,7 +182,6 @@ class DeformableTransformer(nn.Module):
         _mask = prob < self.mask_freq
         
         ## points
-        
         if _mask and inputs[1].requires_grad and self.mask_pts:
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
@@ -197,7 +208,6 @@ class DeformableTransformer(nn.Module):
             inputs[1] = inputs[1].contiguous()
             if self.residual == 'sum':
                 inputs[1] += residual_pts
-        
         if _mask and inputs[1].requires_grad and self.mask_pts:
             pts_feat = inputs[1].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
