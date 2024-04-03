@@ -57,12 +57,9 @@ class DeformableTransformer(nn.Module):
         pts_channels = 256
         img_channels = 80     
         if self.mask_img:
-            img_kwargs = copy.deepcopy(kwargs)
-            img_kwargs['d_model'] = img_channels
-            img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False)
-            self._model = build_deforamble_transformer(**img_kwargs)
+            self._model = build_deforamble_transformer(**kwargs)
         self.conv = nn.Sequential(nn.Conv2d(
-                pts_channels+img_channels, pts_channels, 3, padding=1, bias=False),
+                pts_channels + img_channels, pts_channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(pts_channels),
             nn.ReLU(True))
         if self.mask_pts:
@@ -75,11 +72,11 @@ class DeformableTransformer(nn.Module):
                     )])        
         if self.mask_img:
             self._position_embedding = PositionEmbeddingSine(
-                num_pos_feats= img_channels // 2, normalize=True)
+                num_pos_feats= pts_channels // 2, normalize=True)
             self._input_proj = nn.ModuleList([
                     nn.Sequential(
-                        nn.Conv2d(img_channels, img_channels, kernel_size=1),
-                        nn.GroupNorm(10, img_channels),
+                        nn.Conv2d(img_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
                     )])
         self.num_cross_attention_layers = kwargs.get('num_cross_attention_layers', False)
         self._nheads = kwargs.get('_nheads', False)
@@ -100,9 +97,8 @@ class DeformableTransformer(nn.Module):
             self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
             self.pred = nn.Conv2d(pts_channels, pts_channels, kernel_size=1)
         if self.mask_img:
-            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
-            self._pred = nn.Conv2d(img_channels, img_channels, kernel_size=1)
-            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
+            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
+            self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
         self.initialize_weights()
@@ -113,19 +109,19 @@ class DeformableTransformer(nn.Module):
                 nn.init.xavier_uniform_(proj[0].weight, gain=1)
                 nn.init.constant_(proj[0].bias, 0)
             torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                for _proj in self.target_proj:
+                    nn.init.xavier_uniform_(_proj[0].weight, gain=1)
+                    nn.init.constant_(_proj[0].bias, 0)
         if self.mask_img:
             for __proj in self._input_proj:
                 nn.init.xavier_uniform_(__proj[0].weight, gain=1)
                 nn.init.constant_(__proj[0].bias, 0)
             torch.nn.init.normal_(self.img_mask_tokens, std=.02)
-        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-            for _proj in self.target_proj:
-                nn.init.xavier_uniform_(_proj[0].weight, gain=1)
-                nn.init.constant_(_proj[0].bias, 0)
-        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-            for _proj_ in self._target_proj:
-                nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
-                nn.init.constant_(_proj_[0].bias, 0)
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                for _proj_ in self._target_proj:
+                    nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
+                    nn.init.constant_(_proj_[0].bias, 0)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -141,10 +137,27 @@ class DeformableTransformer(nn.Module):
         
     def random_patch_masking(self, x):
         B, D, W, H = x.shape
-        if D == 256:
-            mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
-        elif D == 80:
-            mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
+        mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
+
+        mask = torch.zeros([B, W, H], device=x.device)
+        for b in range(B):
+            # pick size and number of patch
+            l_min, l_max = self.patch_cfg.len_min, self.patch_cfg.len_max
+            rand_s_l = torch.randint(l_min, l_max, (500,))
+            rand_s_l_sq = torch.cumsum(torch.square(rand_s_l), dim=0)
+            rand_n = (rand_s_l_sq > (W*H*self.mask_ratio)).nonzero()[0][0]
+
+            # masking patch
+            rand_x_l, rand_y_l = torch.randint(0, W, (rand_n, 1)), torch.randint(0, H, (rand_n, 1))
+            for rand_s, rand_x, rand_y in zip(rand_s_l, rand_x_l, rand_y_l):
+                x[b][:, rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = mask_tokens
+                mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
+
+        return x, mask.flatten(1)
+    
+    def random_patch_img_masking(self, x):
+        B, D, W, H = x.shape
+        mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
 
         mask = torch.zeros([B, W, H], device=x.device)
         for b in range(B):
@@ -230,16 +243,16 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
         ## img        
+        
+        if self.mask_img:
+            _s_proj = self._input_proj[0](inputs[0])
+        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
-                inputs[0] = self.linear(inputs[0])
-                _src, img_mask = self.random_patch_masking(inputs[0])
-        else:
-            _src = inputs[0]
+                _s_proj, img_mask = self.random_patch_img_masking(_s_proj)
         
         if self.mask_img:
-            _s_proj = self._input_proj[0](_src)
             _target = inputs[1]
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 _t_proj = self._target_proj[0](_target)
