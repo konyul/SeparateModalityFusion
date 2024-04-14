@@ -24,6 +24,7 @@ class BEVFusion(Base3DDetector):
         freeze_img=False,
         freeze_pts=False,
         sep_fg=False,
+        smt=False,
         data_preprocessor: OptConfigType = None,
         pts_voxel_encoder: Optional[dict] = None,
         pts_middle_encoder: Optional[dict] = None,
@@ -76,6 +77,7 @@ class BEVFusion(Base3DDetector):
         self.freeze_img = freeze_img
         self.freeze_pts = freeze_pts
         self.sep_fg = sep_fg
+        self.smt = smt
         self.init_weights()
 
     def _forward(self,
@@ -91,18 +93,7 @@ class BEVFusion(Base3DDetector):
     def parse_losses(
         self, losses: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Parses the raw outputs (losses) of the network.
-
-        Args:
-            losses (dict): Raw output of the network, which usually contain
-                losses and other necessary information.
-
-        Returns:
-            tuple[Tensor, dict]: There are two elements. The first is the
-            loss tensor passed to optim_wrapper which may be a weighted sum
-            of all losses, and the second is log_vars which will be sent to
-            the logger.
-        """
+        
         log_vars = []
         for loss_name, loss_value in losses.items():
             if isinstance(loss_value, torch.Tensor):
@@ -279,30 +270,7 @@ class BEVFusion(Base3DDetector):
     def predict(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
                 batch_data_samples: List[Det3DDataSample],
                 **kwargs) -> List[Det3DDataSample]:
-        """Forward of testing.
-
-        Args:
-            batch_inputs_dict (dict): The model input dict which include
-                'points' keys.
-
-                - points (list[torch.Tensor]): Point cloud of each sample.
-            batch_data_samples (List[:obj:`Det3DDataSample`]): The Data
-                Samples. It usually includes information such as
-                `gt_instance_3d`.
-
-        Returns:
-            list[:obj:`Det3DDataSample`]: Detection results of the
-            input sample. Each Det3DDataSample usually contain
-            'pred_instances_3d'. And the ``pred_instances_3d`` usually
-            contains following keys.
-
-            - scores_3d (Tensor): Classification scores, has a shape
-                (num_instances, )
-            - labels_3d (Tensor): Labels of bboxes, has a shape
-                (num_instances, ).
-            - bbox_3d (:obj:`BaseInstance3DBoxes`): Prediction of bboxes,
-                contains a tensor with shape (num_instances, 7).
-        """
+        
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         feats, _, _= self.extract_feat(batch_inputs_dict, batch_input_metas)
 
@@ -423,6 +391,16 @@ class BEVFusion(Base3DDetector):
             fg_bg_mask_list = self.fg_bg_mask(batch_data_samples)
         else:
             fg_bg_mask_list = None
+        if self.smt:
+            batch = len(batch_inputs_dict['points'])
+            prob = np.random.uniform()
+            for B in range(batch):
+                cam_drop = prob < 1/3
+                lidar_drop = prob > 1/3 and prob < 2/3
+                if cam_drop:
+                    batch_inputs_dict['imgs'][B][:] = 0
+                elif lidar_drop:
+                    batch_inputs_dict['points'][B][:] = 0
         feats, mask_loss, pts_loss = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list)
         losses = dict()
         if self.with_bbox_head:
