@@ -26,6 +26,9 @@ from .deformable_transformer import build_deforamble_transformer
 from .deformable_utils.position_encoding import PositionEmbeddingSine
 from .utils import NestedTensor
 import cv2
+import shutil
+from mmdet3d.models.layers.fusion_layers import apply_3d_transformation
+from .depth_map_utils import fill_in_multiscale
 def clip_sigmoid(x, eps=1e-4):
     y = torch.clamp(x.sigmoid_(), min=eps, max=1 - eps)
     return y
@@ -108,9 +111,10 @@ class DeformableTransformer(nn.Module):
         self.initialize_weights()
         
     def initialize_weights(self):
-        for proj in self.input_proj:
-            nn.init.xavier_uniform_(proj[0].weight, gain=1)
-            nn.init.constant_(proj[0].bias, 0)
+        if self.mask_pts:
+            for proj in self.input_proj:
+                nn.init.xavier_uniform_(proj[0].weight, gain=1)
+                nn.init.constant_(proj[0].bias, 0)
         for __proj in self._input_proj:
             nn.init.xavier_uniform_(__proj[0].weight, gain=1)
             nn.init.constant_(__proj[0].bias, 0)
@@ -122,8 +126,10 @@ class DeformableTransformer(nn.Module):
             for _proj_ in self._target_proj:
                 nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
                 nn.init.constant_(_proj_[0].bias, 0)
-        torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
-        torch.nn.init.normal_(self.img_mask_tokens, std=.02)
+        if self.mask_pts:
+            torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        if self.mask_img:
+            torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -167,7 +173,8 @@ class DeformableTransformer(nn.Module):
         image_features = (image_features*255)
         max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
         max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
-        cv2.imwrite(f"max_image_feature_{idx}.jpg",max_image_feature)
+        cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
+
     def forward(self, inputs: List[torch.Tensor], fg_bg_mask_list) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
@@ -181,7 +188,7 @@ class DeformableTransformer(nn.Module):
         
         if _mask and inputs[1].requires_grad and self.mask_pts:
             if self.mask_method == 'random_patch':
-                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                pts_target = inputs[1].clone().flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
         else:
             src = inputs[1]
@@ -233,7 +240,7 @@ class DeformableTransformer(nn.Module):
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
-                img_target = inputs[0].flatten(2).transpose(1, 2)
+                img_target = inputs[0].clone().flatten(2).transpose(1, 2)
                 inputs[0] = self.linear(inputs[0])
                 _src, img_mask = self.random_patch_masking(inputs[0])
         else:
@@ -300,6 +307,326 @@ class DeformableTransformer(nn.Module):
                     loss_list['img_loss'] = img_loss
                 return self.conv(torch.cat(inputs, dim=1)), loss_list
         return self.conv(torch.cat(inputs, dim=1)), False
+
+
+class BEVWarp(nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
+    def visualize_pts(self, pts_2d, mask, pts_idx, idx):
+        Img = np.zeros((900, 1600, 3), np.uint8)
+        i_coor = pts_2d[pts_idx][mask[pts_idx].squeeze(-1)]
+        for coor in i_coor:
+            cv2.circle(Img,(int(coor[0].item()),int(coor[1].item())), 5,(0,0,255))
+        cv2.imwrite(f"pts_{idx}.jpg",Img)
+
+    def forward(self, lidar_feats, img_feats, img_metas, pts_metas, **kwargs):
+        batch_size, num_views, I_C, I_H, I_W = img_feats.shape
+        lidar2img = []
+        for img_meta in img_metas:
+            lidar2img.append(img_meta['lidar2img'])
+        lidar2img = np.asarray(lidar2img)
+        lidar2img = img_feats.new_tensor(lidar2img)
+        img2lidar = torch.inverse(lidar2img)
+        pts = pts_metas['pts']
+        decorated_img_feats = []
+        for b in range(batch_size):
+            img_feat = img_feats[b]
+            #ori_H, ori_W = img_metas[b]['batch_input_shape']
+            ori_H, ori_W = 900, 1600
+            pts_3d = pts[b][...,:3]
+            pts_3d = apply_3d_transformation(pts_3d, 'LIDAR', img_metas[b], reverse=True).detach()
+            pts_4d = torch.cat((pts_3d,torch.ones_like(pts_3d[...,:1])),dim=-1).unsqueeze(0).unsqueeze(-1)
+            proj_mat = lidar2img[b].unsqueeze(1)
+            pts_2d = torch.matmul(proj_mat, pts_4d).squeeze(-1)
+            eps = 1e-5
+            depth = pts_2d[..., 2:3]
+            mask = (pts_2d[..., 2:3] > eps)
+            pts_2d = pts_2d[..., 0:2] / torch.maximum(pts_2d[..., 2:3], torch.ones_like(pts_2d[..., 2:3])*eps)
+            self.visualize_pts(pts_2d, mask, 0, '0')
+            self.visualize_pts(pts_2d, mask, 1, '1')
+            import pdb;pdb.set_trace()
+            proj_x = (pts_2d[...,0:1] / ori_W - 0.5) * 2
+            proj_y = (pts_2d[...,1:2] / ori_H - 0.5) * 2
+            mask = (mask & (proj_x > -1.0) 
+                             & (proj_x < 1.0) 
+                             & (proj_y > -1.0) 
+                             & (proj_y < 1.0))
+            mask = torch.nan_to_num(mask)
+            depth_map = img_feat.new_zeros(num_views, I_H, I_W)
+            for i in range(num_views):
+                depth_map[i, (pts_2d[i,mask[i,:,0],1]/ori_H*I_H).long(), (pts_2d[i,mask[i,:,0],0]/ori_W*I_W).long()] = depth[i,mask[i,:,0],0]
+            fill_type = 'multiscale'
+            extrapolate = False
+            blur_type = 'bilateral'
+            for i in range(num_views):
+                final_depths, _ = fill_in_multiscale(
+                                depth_map[i].detach().cpu().numpy(), extrapolate=extrapolate, blur_type=blur_type,
+                                show_process=False)
+                depth_map[i] = depth_map.new_tensor(final_depths)
+            xs = torch.linspace(0, ori_W - 1, I_W, dtype=torch.float32).to(depth_map.device).view(1, 1, I_W).expand(num_views, I_H, I_W)
+            ys = torch.linspace(0, ori_H - 1, I_H, dtype=torch.float32).to(depth_map.device).view(1, I_H, 1).expand(num_views, I_H, I_W)
+            xyd = torch.stack((xs, ys, depth_map, torch.ones_like(depth_map)), dim = -1)
+            xyd [..., 0] *= xyd [..., 2]
+            xyd [..., 1] *= xyd [..., 2]
+            xyz = img2lidar[b].view(num_views,1,1,4,4).matmul(xyd.unsqueeze(-1)).squeeze(-1)[...,:3] #(6,112,200,3)
+            xyz = apply_3d_transformation(xyz.view(num_views*I_H*I_W, 3), 'LIDAR', img_metas[b], reverse=False).view(num_views, I_H, I_W, 3).detach()
+            pc_range = xyz.new_tensor([-54, -54, -5, 54, 54, 3])  #TODO: fix it to support other outdoor dataset!!!
+            lift_mask = (xyz[...,0] > pc_range[0]) & (xyz[...,1] > pc_range[1]) & (xyz[...,2] > pc_range[2])\
+                        & (xyz[...,0] < pc_range[3]) & (xyz[...,1] < pc_range[4]) & (xyz[...,2] < pc_range[5])
+            xy_bev = (xyz[...,0:2] - pc_range[0:2]) / (pc_range[3:5] - pc_range[0:2])
+            xy_bev = (xy_bev - 0.5) * 2
+            decorated_img_feat = F.grid_sample(lidar_feats[b].unsqueeze(0).repeat(num_views,1,1,1), xy_bev, align_corners=False).permute(0,2,3,1) #N, H, W, C
+            decorated_img_feat[~lift_mask]=0
+            decorated_img_feats.append(decorated_img_feat.permute(0,3,1,2))
+        decorated_img_feats = torch.stack(decorated_img_feats, dim=0)
+        return decorated_img_feats
+
+@MODELS.register_module()
+class DeformableTransformer_pers(nn.Module):
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.mask_freq = kwargs.pop("mask_freq")
+        self.mask_ratio = kwargs.pop("mask_ratio")
+        
+        self.mask_img=kwargs.pop("mask_img", False)
+        self.mask_pts=kwargs.pop("mask_pts", False)
+        self.fusion_method=kwargs.get('fusion_method',False)
+        self.mask_method = kwargs.get('mask_method', 'point')
+        if 'patch' in self.mask_method:
+            self.patch_cfg = kwargs.get('patch_cfg', None)
+        if kwargs.get('residual', False):
+            self.residual = kwargs.pop("residual")
+        else:
+            self.residual = False
+        if kwargs.get('loss_weight', False):
+            self.loss_weight = kwargs.pop("loss_weight")
+        else:
+            self.loss_weight = 1
+        if self.mask_pts:
+            self.model = build_deforamble_transformer(**kwargs)
+        pts_channels = 256
+        img_channels = 256    
+        if self.mask_img:
+            img_kwargs = copy.deepcopy(kwargs)
+            img_kwargs['d_model'] = img_channels
+            img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False)
+            self._model = build_deforamble_transformer(**img_kwargs)
+        self.conv = nn.Sequential(nn.Conv2d(
+                pts_channels+img_channels, pts_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(pts_channels),
+            nn.ReLU(True))
+        if self.mask_pts:
+            self.position_embedding = PositionEmbeddingSine(
+                num_pos_feats= pts_channels // 2, normalize=True)
+            self.input_proj = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
+                    )])        
+        if self.mask_img:
+            self._position_embedding = PositionEmbeddingSine(
+                num_pos_feats= img_channels // 2, normalize=True)
+            self._input_proj = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(img_channels, img_channels, kernel_size=1),
+                        nn.GroupNorm(32, img_channels),
+                    )])
+        self.num_cross_attention_layers = kwargs.get('num_cross_attention_layers', False)
+        self._nheads = kwargs.get('_nheads', False)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+            if self.mask_pts:
+                self.target_proj = nn.ModuleList([
+                        nn.Sequential(
+                            nn.Conv2d(img_channels, img_channels, kernel_size=1),
+                            nn.GroupNorm(10, img_channels),
+                        )]) 
+            if self.mask_img:
+                self._target_proj = nn.ModuleList([
+                        nn.Sequential(
+                            nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                            nn.GroupNorm(32, pts_channels),
+                        )]) 
+        if self.mask_pts:
+            self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
+            self.pred = nn.Conv2d(pts_channels, pts_channels, kernel_size=1)
+        if self.mask_img:
+            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
+            self._pred = nn.Conv2d(img_channels, img_channels, kernel_size=1)
+            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
+        if self.residual == 'concat':
+            self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
+        self.Warp = BEVWarp()
+        self.initialize_weights()
+        
+    def initialize_weights(self):
+        if self.mask_pts:
+            for proj in self.input_proj:
+                nn.init.xavier_uniform_(proj[0].weight, gain=1)
+                nn.init.constant_(proj[0].bias, 0)
+        if self.mask_img:
+            for __proj in self._input_proj:
+                nn.init.xavier_uniform_(__proj[0].weight, gain=1)
+                nn.init.constant_(__proj[0].bias, 0)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+            if self.mask_pts:
+                for _proj in self.target_proj:
+                    nn.init.xavier_uniform_(_proj[0].weight, gain=1)
+                    nn.init.constant_(_proj[0].bias, 0)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+            if self.mask_img:
+                for _proj_ in self._target_proj:
+                    nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
+                    nn.init.constant_(_proj_[0].bias, 0)
+        if self.mask_pts:
+            torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        if self.mask_img:
+            torch.nn.init.normal_(self.img_mask_tokens, std=.02)
+        # initialize nn.Linear and nn.LayerNorm
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            # we use xavier_uniform following official JAX ViT:
+            torch.nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+    def random_patch_masking(self, x):
+        B, D, W, H = x.shape
+        mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
+
+        mask = torch.zeros([B, W, H], device=x.device)
+        for b in range(B):
+            # pick size and number of patch
+            l_min, l_max = self.patch_cfg.len_min, self.patch_cfg.len_max
+            rand_s_l = torch.randint(l_min, l_max, (500,))
+            rand_s_l_sq = torch.cumsum(torch.square(rand_s_l), dim=0)
+            rand_n = (rand_s_l_sq > (W*H*self.mask_ratio)).nonzero()[0][0]
+
+            # masking patch
+            rand_x_l, rand_y_l = torch.randint(0, W, (rand_n, 1)), torch.randint(0, H, (rand_n, 1))
+            for rand_s, rand_x, rand_y in zip(rand_s_l, rand_x_l, rand_y_l):
+                x[b][:, rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = mask_tokens
+                mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
+
+        return x, mask.flatten(1)
+
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        #sum_image_feature = (np.sum(np.transpose(image_features,(1,2,0)),axis=2)/64).astype("uint8")
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        #sum_image_feature = cv2.applyColorMap(sum_image_feature,cv2.COLORMAP_JET)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        #cv2.imwrite(f"max_{idx}.jpg",sum_image_feature)
+        cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
+
+    def forward(self, img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list) -> torch.Tensor:
+        # image feature, points feature
+        if self.residual:
+            residual_img = img_feat
+        prob = np.random.uniform()
+        _mask = prob < self.mask_freq
+        batch_size = pts_feat.shape[0]
+        BN, I_C, I_H, I_W = img_feat.shape
+        warped_img_feats = self.Warp(pts_feat, img_feat.view(batch_size, -1, I_C, I_H, I_W), img_metas, pts_metas)
+        B, N, C, H, W = warped_img_feats.shape
+        warped_img_feats = warped_img_feats.view(B*N,C,H,W)
+        
+        #shutil.copy(img_metas[0]['img_path'][0],'max_0_img.jpg')
+        #self.visualize_feat(img_feat[0],'0_img_feat')
+        self.visualize_feat(warped_img_feats[0],'0_lidar_feat')
+        # shutil.copy(img_metas[0]['img_path'][1],'max_1_img.jpg')
+        # self.visualize_feat(img_feat[1],'1_img_feat')
+        self.visualize_feat(warped_img_feats[1],'1_lidar_feat')
+        # shutil.copy(img_metas[0]['img_path'][2],'max_2_img.jpg')
+        # self.visualize_feat(img_feat[2],'2_img_feat')
+        self.visualize_feat(warped_img_feats[2],'2_lidar_feat')
+        # shutil.copy(img_metas[0]['img_path'][3],'max_3_img.jpg')
+        # self.visualize_feat(img_feat[3],'3_img_feat')
+        self.visualize_feat(warped_img_feats[3],'3_lidar_feat')
+        # shutil.copy(img_metas[0]['img_path'][4],'max_4_img.jpg')
+        # self.visualize_feat(img_feat[4],'4_img_feat')
+        self.visualize_feat(warped_img_feats[4],'4_lidar_feat')
+        # shutil.copy(img_metas[0]['img_path'][5],'max_5_img.jpg')
+        # self.visualize_feat(img_feat[5],'5_img_feat')
+        self.visualize_feat(warped_img_feats[5],'5_lidar_feat')
+        import pdb;pdb.set_trace()
+        # _mask = True
+        ## img        
+        if _mask and img_feat.requires_grad and self.mask_img:
+            if self.mask_method == 'random_patch':
+                img_target = img_feat.clone().flatten(2).transpose(1, 2)
+                # self.visualize_feat(img_target[0].transpose(0,1).view(256,32,88),'front_2feat')
+                # self.visualize_feat(img_target[1].transpose(0,1).view(256,32,88),'left_2feat')
+                # self.visualize_feat(img_target[2].transpose(0,1).view(256,32,88),'right_2feat')
+                # shutil.copy(img_metas[0]['img_path'][0],'max_front_1img.jpg')
+                # shutil.copy(img_metas[0]['img_path'][1],'max_left_1img.jpg')
+                # shutil.copy(img_metas[0]['img_path'][2],'max_right_1img.jpg')
+                #img_feat = self.linear(img_feat)
+                img_feat = img_feat.clone()
+                _src, img_mask = self.random_patch_masking(img_feat)
+                if self.residual:
+                    residual_img = _src
+                # self.visualize_feat(_src[0],'front_3mask')
+                # self.visualize_feat(_src[1],'left_3mask')
+                # self.visualize_feat(_src[2],'right_3mask')
+        else:
+            _src = img_feat
+
+        if self.mask_img:
+            _s_proj = self._input_proj[0](_src)
+            _target = warped_img_feats
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                _t_proj = self._target_proj[0](_target)
+            else:
+                _t_proj = _target
+            _masks = torch.zeros(
+                    (_s_proj.shape[0], _s_proj.shape[2], _s_proj.shape[3]),
+                    dtype=torch.bool,
+                    device=_s_proj.device,
+                )
+            _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
+                    _s_proj.dtype)
+            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            img_feat = self._pred(img_feat)
+            img_feat = img_feat.contiguous()
+            if self.residual == 'sum':
+                img_feat += residual_img
+            # self.visualize_feat(img_feat[0],'front_4recon')
+            # self.visualize_feat(img_feat[1],'left_4recon')
+            # self.visualize_feat(img_feat[2],'right_4recon')
+        if _mask and img_feat.requires_grad and self.mask_img:
+            img_feat = img_feat.clone().flatten(2).transpose(1, 2)         
+            loss = (img_feat - img_target) ** 2
+            loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+            loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
+            img_loss = self.loss_weight * loss
+        if _mask and img_feat.requires_grad:
+            loss_list = dict()
+            if fg_bg_mask_list is not None:
+                if self.mask_img:
+                    loss_list['img_loss'] = img_loss
+                return img_feat, pts_feat, loss_list
+        return img_feat, pts_feat, False
 
 @MODELS.register_module()
 class ModalitySpecificDecoderMask(nn.Module):

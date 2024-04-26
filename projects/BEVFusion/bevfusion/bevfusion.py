@@ -15,7 +15,7 @@ from mmdet3d.structures import Det3DDataSample
 from mmdet3d.utils import OptConfigType, OptMultiConfig, OptSampleList
 from .ops import Voxelization
 from mmdet3d.structures.ops import box_np_ops
-
+import cv2
 @MODELS.register_module()
 class BEVFusion(Base3DDetector):
 
@@ -166,7 +166,18 @@ class BEVFusion(Base3DDetector):
         """bool: Whether the detector has a segmentation head.
         """
         return hasattr(self, 'seg_head') and self.seg_head is not None
-
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        #sum_image_feature = (np.sum(np.transpose(image_features,(1,2,0)),axis=2)/64).astype("uint8")
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        #sum_image_feature = cv2.applyColorMap(sum_image_feature,cv2.COLORMAP_JET)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        #cv2.imwrite(f"max_{idx}.jpg",sum_image_feature)
+        cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
     def extract_img_feat(
         self,
         x,
@@ -178,24 +189,28 @@ class BEVFusion(Base3DDetector):
         lidar_aug_matrix,
         img_metas,
         pts_feats,
-        pts_metas
+        pts_metas,
+        fg_bg_mask_list=None
     ) -> torch.Tensor:
 
         B, N, C, H, W = x.size()
         x = x.view(B * N, C, H, W).contiguous()
-
+        self.visualize_feat(x[0],'0')
+        self.visualize_feat(x[1],'1')
+        self.visualize_feat(x[2],'2')
+        self.visualize_feat(x[3],'3')
+        self.visualize_feat(x[4],'4')
+        self.visualize_feat(x[5],'5')
+        import pdb;pdb.set_trace()
         x = self.img_backbone(x)
         x = self.img_neck(x)
-
         if not isinstance(x, torch.Tensor):
             x = x[0]
 
         BN, C, H, W = x.size()
         if self.imgpts_neck is not None:
-            if self.masking_encoder is not None:
-                x, pts_feats, mask_loss = self.masking_encoder(x, pts_feats, img_metas, pts_metas, self.imgpts_neck)
-            else:    
-                x, pts_feats = self.imgpts_neck(x, pts_feats, img_metas, pts_metas)
+            x, pts_feats, mask_loss = self.imgpts_neck(x, pts_feats, img_metas, pts_metas, fg_bg_mask_list)
+            x = x.contiguous()
         x = x.view(B, int(BN / B), C, H, W)
         with torch.autocast(device_type='cuda', dtype=torch.float32):
             x = self.view_transform(
@@ -208,7 +223,7 @@ class BEVFusion(Base3DDetector):
                 lidar_aug_matrix,
                 img_metas,
             )
-        if self.masking_encoder is not None:
+        if self.imgpts_neck is not None:
             return x, pts_feats, mask_loss
         else:
             return x, pts_feats, None
@@ -316,7 +331,8 @@ class BEVFusion(Base3DDetector):
                                                 lidar_aug_matrix,
                                                 batch_input_metas,
                                                 pts_feature,
-                                                pts_metas)
+                                                pts_metas,
+                                                fg_bg_mask_list)
             features.append(img_feature)
         features.append(pts_feature)
         if self.fusion_layer is not None:
@@ -408,7 +424,8 @@ class BEVFusion(Base3DDetector):
         if pts_loss:
             if isinstance(pts_loss,dict):
                 losses.update(pts_loss) 
-        if mask_loss is not None:
-            losses.update({'mask_loss':mask_loss})
+        if mask_loss:
+            if isinstance(mask_loss,dict):
+                losses.update(mask_loss) 
         losses.update(bbox_loss)
         return losses
