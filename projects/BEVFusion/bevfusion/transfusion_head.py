@@ -115,17 +115,18 @@ class DeformableTransformer(nn.Module):
             for proj in self.input_proj:
                 nn.init.xavier_uniform_(proj[0].weight, gain=1)
                 nn.init.constant_(proj[0].bias, 0)
-        for __proj in self._input_proj:
-            nn.init.xavier_uniform_(__proj[0].weight, gain=1)
-            nn.init.constant_(__proj[0].bias, 0)
-        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-            for _proj in self.target_proj:
-                nn.init.xavier_uniform_(_proj[0].weight, gain=1)
-                nn.init.constant_(_proj[0].bias, 0)
-        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-            for _proj_ in self._target_proj:
-                nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
-                nn.init.constant_(_proj_[0].bias, 0)
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                for _proj in self.target_proj:
+                    nn.init.xavier_uniform_(_proj[0].weight, gain=1)
+                    nn.init.constant_(_proj[0].bias, 0)
+        if self.mask_img:
+            for __proj in self._input_proj:
+                nn.init.xavier_uniform_(__proj[0].weight, gain=1)
+                nn.init.constant_(__proj[0].bias, 0)
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                for _proj_ in self._target_proj:
+                    nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
+                    nn.init.constant_(_proj_[0].bias, 0)
         if self.mask_pts:
             torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
         if self.mask_img:
@@ -143,7 +144,8 @@ class DeformableTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
         
-    def random_patch_masking(self, x):
+    def random_patch_masking(self, _x):
+        x = _x.clone()
         B, D, W, H = x.shape
         if D == 256:
             mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
@@ -175,27 +177,32 @@ class DeformableTransformer(nn.Module):
         max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
         cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
 
-    def forward(self, inputs: List[torch.Tensor], fg_bg_mask_list) -> torch.Tensor:
+    def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
-            residual_pts = inputs[1]
-            residual_img = inputs[0]
+            residual_pts = inputs[1].clone()
+            residual_img = inputs[0].clone()
     
         prob = np.random.uniform()
-        _mask = prob < self.mask_freq
+        if sensor_list is not None:
+            cam_alive = sensor_list[0]
+            pts_alive = sensor_list[1]
+            _mask = (prob < self.mask_freq) * cam_alive * pts_alive
+        else:
+            _mask = prob < self.mask_freq
         
         ## points
         
         if _mask and inputs[1].requires_grad and self.mask_pts:
             if self.mask_method == 'random_patch':
-                pts_target = inputs[1].clone().flatten(2).transpose(1, 2)
+                pts_target = inputs[1].flatten(2).transpose(1, 2).clone()
                 src, pts_mask = self.random_patch_masking(inputs[1])
         else:
-            src = inputs[1]
+            src = inputs[1].clone()
         
         if self.mask_pts:
             s_proj = self.input_proj[0](src)
-            target = inputs[0]
+            target = inputs[0].clone()
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 t_proj = self.target_proj[0](target)
             else:
@@ -207,16 +214,16 @@ class DeformableTransformer(nn.Module):
                 )
             pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
                     s_proj.dtype)
-            inputs[1] = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
-            inputs[1] = self.pred(inputs[1])
-            inputs[1] = inputs[1].contiguous()
+            pts_feat = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
+            pts_feat = self.pred(pts_feat)
+            pts_feat = pts_feat.contiguous()
             if self.residual == 'sum':
-                inputs[1] += residual_pts
+                pts_feat += residual_pts
         
         if _mask and inputs[1].requires_grad and self.mask_pts:
-            pts_feat = inputs[1].flatten(2).transpose(1, 2)         
+            pts_feat = pts_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[1].device
+                device=pts_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -232,23 +239,25 @@ class DeformableTransformer(nn.Module):
                 bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
                 pts_fg_loss = self.loss_weight * fg_loss
                 pts_bg_loss = self.loss_weight * bg_loss
+                pts_feat = pts_feat.transpose(1,2).view(1,256,180,180)
             else:
                 loss = (pts_feat - pts_target) ** 2
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
+                pts_feat = pts_feat.transpose(1,2).view(1,256,180,180)
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
-                img_target = inputs[0].clone().flatten(2).transpose(1, 2)
+                img_target = inputs[0].flatten(2).transpose(1, 2).clone()
                 inputs[0] = self.linear(inputs[0])
                 _src, img_mask = self.random_patch_masking(inputs[0])
         else:
-            _src = inputs[0]
+            _src = inputs[0].clone()
         
         if self.mask_img:
             _s_proj = self._input_proj[0](_src)
-            _target = inputs[1]
+            _target = inputs[1].clone()
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 _t_proj = self._target_proj[0](_target)
             else:
@@ -260,16 +269,16 @@ class DeformableTransformer(nn.Module):
                 )
             _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
                     _s_proj.dtype)
-            inputs[0] = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
-            inputs[0] = self._pred(inputs[0])
-            inputs[0] = inputs[0].contiguous()
+            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            img_feat = self._pred(img_feat)
+            img_feat = img_feat.contiguous()
             if self.residual == 'sum':
-                inputs[0] += residual_img
+                img_feat += residual_img
         
         if _mask and inputs[0].requires_grad and self.mask_img:
-            img_feat = inputs[0].flatten(2).transpose(1, 2)         
+            img_feat = img_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[0].device
+                device=img_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -299,15 +308,63 @@ class DeformableTransformer(nn.Module):
                 if self.mask_img:
                     loss_list['img_fg_loss'] = img_fg_loss
                     loss_list['img_bg_loss'] = img_bg_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
+                return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), loss_list
             else:
                 if self.mask_pts:
                     loss_list['pts_loss'] = pts_loss
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
-        return self.conv(torch.cat(inputs, dim=1)), False
+                return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), loss_list
+        return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), False
 
+    def forward(
+        self, 
+        inputs: List[torch.Tensor], 
+        fg_bg_mask_list, 
+        sensor_list=None,
+        batch_input_metas=None,
+    ) -> torch.Tensor:
+        batch = len(batch_input_metas)
+        loss_list, feat_list = [], []
+        loss_flag = False
+        for b in range(batch):
+            inputs_ = [inputs[0][b].unsqueeze(0), inputs[1][b].unsqueeze(0)]
+            if fg_bg_mask_list is not None:
+                fg_bg_mask_list_ = [fg_bg_mask_list[0][b].unsqueeze(0),
+                                    fg_bg_mask_list[1][b].unsqueeze(0)]
+                sensor_list_ = [True, True]
+            else:
+                fg_bg_mask_list_ = None
+                sensor_list_ = None
+            feat, loss_l = self.forward_single(inputs_, fg_bg_mask_list_, sensor_list_)
+            feat_list.append(feat)
+            loss_list.append(loss_l)
+            if loss_l:
+                loss_flag = True
+
+        for b in range(batch):
+            if loss_list[b]:
+                if batch_input_metas[b]['smt_number'] != 2:
+                    for key in list(loss_list[b].keys()):
+                        loss_list[b][key] *= 0.
+
+        if loss_flag:
+            if batch == 2:
+                if loss_list.count(False) == 0:
+                    #  print(0)
+                    for key in list(loss_list[0].keys()):
+                        loss_list[0][key] += loss_list[1][key]
+                        loss_list[0][key] /= 2
+                else:
+                    #  print(1)
+                    idx = loss_list.index(False)
+                    loss_list.pop(idx)
+            loss_list = loss_list[0]
+        else:
+            #  print(2)
+            loss_list = False
+
+        return torch.cat(feat_list, dim=0), loss_list
 
 class BEVWarp(nn.Module):
     
@@ -353,9 +410,7 @@ class BEVWarp(nn.Module):
             depth = pts_2d[..., 2:3]
             mask = (pts_2d[..., 2:3] > eps)
             pts_2d = pts_2d[..., 0:2] / torch.maximum(pts_2d[..., 2:3], torch.ones_like(pts_2d[..., 2:3])*eps)
-            self.visualize_pts(pts_2d, mask, 0, '0')
-            self.visualize_pts(pts_2d, mask, 1, '1')
-            import pdb;pdb.set_trace()
+
             proj_x = (pts_2d[...,0:1] / ori_W - 0.5) * 2
             proj_y = (pts_2d[...,1:2] / ori_H - 0.5) * 2
             mask = (mask & (proj_x > -1.0) 
@@ -506,7 +561,8 @@ class DeformableTransformer_pers(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
         
-    def random_patch_masking(self, x):
+    def random_patch_masking(self, _x):
+        x = _x.clone()
         B, D, W, H = x.shape
         mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
 
@@ -539,62 +595,32 @@ class DeformableTransformer_pers(nn.Module):
         #cv2.imwrite(f"max_{idx}.jpg",sum_image_feature)
         cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
 
-    def forward(self, img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list) -> torch.Tensor:
+    def forward_single(self, img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
-            residual_img = img_feat
+            residual_img = img_feat.clone()
         prob = np.random.uniform()
-        _mask = prob < self.mask_freq
-        batch_size = pts_feat.shape[0]
-        BN, I_C, I_H, I_W = img_feat.shape
-        warped_img_feats = self.Warp(pts_feat, img_feat.view(batch_size, -1, I_C, I_H, I_W), img_metas, pts_metas)
-        B, N, C, H, W = warped_img_feats.shape
-        warped_img_feats = warped_img_feats.view(B*N,C,H,W)
+        if sensor_list is not None:
+            cam_alive = sensor_list[0]
+            pts_alive = sensor_list[1]
+            _mask = (prob < self.mask_freq) * cam_alive * pts_alive
+        else:
+            _mask = prob < self.mask_freq
         
-        #shutil.copy(img_metas[0]['img_path'][0],'max_0_img.jpg')
-        #self.visualize_feat(img_feat[0],'0_img_feat')
-        self.visualize_feat(warped_img_feats[0],'0_lidar_feat')
-        # shutil.copy(img_metas[0]['img_path'][1],'max_1_img.jpg')
-        # self.visualize_feat(img_feat[1],'1_img_feat')
-        self.visualize_feat(warped_img_feats[1],'1_lidar_feat')
-        # shutil.copy(img_metas[0]['img_path'][2],'max_2_img.jpg')
-        # self.visualize_feat(img_feat[2],'2_img_feat')
-        self.visualize_feat(warped_img_feats[2],'2_lidar_feat')
-        # shutil.copy(img_metas[0]['img_path'][3],'max_3_img.jpg')
-        # self.visualize_feat(img_feat[3],'3_img_feat')
-        self.visualize_feat(warped_img_feats[3],'3_lidar_feat')
-        # shutil.copy(img_metas[0]['img_path'][4],'max_4_img.jpg')
-        # self.visualize_feat(img_feat[4],'4_img_feat')
-        self.visualize_feat(warped_img_feats[4],'4_lidar_feat')
-        # shutil.copy(img_metas[0]['img_path'][5],'max_5_img.jpg')
-        # self.visualize_feat(img_feat[5],'5_img_feat')
-        self.visualize_feat(warped_img_feats[5],'5_lidar_feat')
-        import pdb;pdb.set_trace()
-        # _mask = True
         ## img        
         if _mask and img_feat.requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
-                img_target = img_feat.clone().flatten(2).transpose(1, 2)
-                # self.visualize_feat(img_target[0].transpose(0,1).view(256,32,88),'front_2feat')
-                # self.visualize_feat(img_target[1].transpose(0,1).view(256,32,88),'left_2feat')
-                # self.visualize_feat(img_target[2].transpose(0,1).view(256,32,88),'right_2feat')
-                # shutil.copy(img_metas[0]['img_path'][0],'max_front_1img.jpg')
-                # shutil.copy(img_metas[0]['img_path'][1],'max_left_1img.jpg')
-                # shutil.copy(img_metas[0]['img_path'][2],'max_right_1img.jpg')
-                #img_feat = self.linear(img_feat)
+                img_target = img_feat.flatten(2).transpose(1, 2).clone()
                 img_feat = img_feat.clone()
                 _src, img_mask = self.random_patch_masking(img_feat)
                 if self.residual:
                     residual_img = _src
-                # self.visualize_feat(_src[0],'front_3mask')
-                # self.visualize_feat(_src[1],'left_3mask')
-                # self.visualize_feat(_src[2],'right_3mask')
         else:
-            _src = img_feat
+            _src = img_feat.clone()
 
         if self.mask_img:
             _s_proj = self._input_proj[0](_src)
-            _target = warped_img_feats
+            _target = pts_feat.clone()
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 _t_proj = self._target_proj[0](_target)
             else:
@@ -606,28 +632,74 @@ class DeformableTransformer_pers(nn.Module):
                 )
             _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
                     _s_proj.dtype)
-            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
-            img_feat = self._pred(img_feat)
-            img_feat = img_feat.contiguous()
+            img_output = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            img_output = self._pred(img_output)
+            img_output = img_output.contiguous()
             if self.residual == 'sum':
-                img_feat += residual_img
-            # self.visualize_feat(img_feat[0],'front_4recon')
-            # self.visualize_feat(img_feat[1],'left_4recon')
-            # self.visualize_feat(img_feat[2],'right_4recon')
-        if _mask and img_feat.requires_grad and self.mask_img:
-            img_feat = img_feat.clone().flatten(2).transpose(1, 2)         
-            loss = (img_feat - img_target) ** 2
+                img_output += residual_img
+        if _mask and img_output.requires_grad and self.mask_img:
+            img_output = img_output.flatten(2).transpose(1, 2)         
+            loss = (img_output - img_target) ** 2
             loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
             loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
             img_loss = self.loss_weight * loss
-        if _mask and img_feat.requires_grad:
+            img_output = img_output.transpose(1,2).view(6,256,32,88).contiguous()
+        if _mask and img_output.requires_grad:
             loss_list = dict()
             if fg_bg_mask_list is not None:
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return img_feat, pts_feat, loss_list
-        return img_feat, pts_feat, False
+                return img_output, pts_feat, loss_list
+        return img_output, pts_feat, False
 
+    def forward(
+        self, 
+        img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, sensor_list=None, batch_input_metas=None
+    ) -> torch.Tensor:
+        batch = len(batch_input_metas)
+        loss_list, img_feat_list, pts_feat_list = [], [], []
+        loss_flag = False
+        for b in range(batch):
+            img_feat_ = img_feat[6*b:6*(b+1)]
+            pts_feat_ = pts_feat[b:b+1]
+            img_metas_ = img_metas[b]
+            pts_metas_ = pts_metas
+            if fg_bg_mask_list is not None:
+                fg_bg_mask_list_ = [fg_bg_mask_list[0][b].unsqueeze(0),
+                                    fg_bg_mask_list[1][b].unsqueeze(0)]
+                sensor_list_ = [True, True]
+            else:
+                fg_bg_mask_list_ = None
+                sensor_list_ = None
+            _img_feat, _pts_feat, loss_l = self.forward_single(img_feat_, pts_feat_, img_metas_, pts_metas_, fg_bg_mask_list_, sensor_list_)
+            img_feat_list.append(_img_feat)
+            pts_feat_list.append(_pts_feat)
+            loss_list.append(loss_l)
+            if loss_l:
+                loss_flag = True
+
+        for b in range(batch):
+            if loss_list[b]:
+                if batch_input_metas[b]['smt_number'] != 2:
+                    for key in list(loss_list[b].keys()):
+                        loss_list[b][key] *= 0.
+
+        if loss_flag:
+            if batch == 2:
+                if loss_list.count(False) == 0:
+                    #  print(0)
+                    for key in list(loss_list[0].keys()):
+                        loss_list[0][key] += loss_list[1][key]
+                        loss_list[0][key] /= 2
+                else:
+                    #  print(1)
+                    idx = loss_list.index(False)
+                    loss_list.pop(idx)
+            loss_list = loss_list[0]
+        else:
+            #  print(2)
+            loss_list = False
+        return torch.stack(img_feat_list, dim=0), torch.cat(pts_feat_list, dim=0), loss_list
 @MODELS.register_module()
 class ModalitySpecificDecoderMask(nn.Module):
 

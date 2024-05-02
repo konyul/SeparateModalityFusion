@@ -55,9 +55,7 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2),
-    fusion_layer=dict(
-        type='ConvFuser', in_channels=[80, 256], out_channels=256))
+        downsample=2))
 
 train_pipeline = [
     dict(
@@ -119,6 +117,7 @@ train_pipeline = [
         prob=0.0,
         fixed_prob=True),
     dict(type='PointShuffle'),
+    dict(type='SwitchedModality', modal_prob=[1/3, 1/3, 1/3]),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -130,7 +129,7 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats'
+            'lidar_aug_matrix', 'num_pts_feats','smt_number'
         ])
 ]
 
@@ -223,8 +222,8 @@ test_cfg = dict()
 
 optim_wrapper = dict(
     type='OptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2))
+    optimizer=dict(type='AdamW', lr=0.00002, weight_decay=0.01),
+    clip_grad=dict(max_norm=10, norm_type=2))
 
 # Default setting for scaling LR automatically
 #   - `enable` means enable scaling LR automatically
@@ -237,5 +236,6 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=1))
 del _base_.custom_hooks
 
-load_from = './pretrained/convert_weight.pth'
+#load_from = './pretrained/convert_weight.pth'
+load_from = 'work_dirs/masking_strategy/version2/perspective_sota/epoch_5.pth'
 find_unused_parameters=True

@@ -88,7 +88,31 @@ model = dict(
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         upsample_cfg=dict(type='deconv', bias=False),
         use_conv_for_no_stride=True),
-    
+
+    fusion_layer=dict(
+        type='DeformableTransformer',
+        mask_pts=True,
+        fusion_method='concat',
+        mask_freq=0.25,
+        mask_ratio=0.5,
+        mask_method='random_patch',
+        patch_cfg=dict(len_min=5, len_max=10),
+        residual='sum',
+        loss_weight=1,
+        d_model=256,
+        nheads=8,
+        num_encoder_layers=3,
+        num_decoder_layers=0,
+        dim_feedforward=1024,
+        dropout=0.1,
+        activation="relu",
+        return_intermediate_dec=True,
+        num_feature_levels=1,
+        dec_n_points=4,
+        enc_n_points=4,
+        two_stage=False,
+        num_queries=300
+            ),
     ###
     imgpts_neck=dict(
         type='DeformableTransformer_pers',
@@ -103,7 +127,7 @@ model = dict(
         loss_weight=1,
         d_model=256,
         nheads=8,
-        num_img_encoder_layers=2,
+        num_img_encoder_layers=3,
         num_decoder_layers=0,
         dim_feedforward=1024,
         dropout=0.1,

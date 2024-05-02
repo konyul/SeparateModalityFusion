@@ -8,7 +8,7 @@ from PIL import Image
 
 from mmdet3d.datasets import GlobalRotScaleTrans
 from mmdet3d.registry import TRANSFORMS
-
+import random
 
 @TRANSFORMS.register_module()
 class ImageAug3D(BaseTransform):
@@ -271,4 +271,22 @@ class GridMask(BaseTransform):
             imgs = [x * mask for x in imgs]
 
         results.update(img=imgs)
+        return results
+@TRANSFORMS.register_module()
+class SwitchedModality(BaseTransform):
+    def __init__(self, modal_prob=[1/3, 1/3, 1/3]):
+        self.modal_prob = np.array(modal_prob)
+
+    def transform(self, results):
+        items = [0, 1, 2]
+        choose = random.choices(items, weights=self.modal_prob, k=1)[0]
+        if choose == 0:
+            # caemra drop
+            for idx in range(len(results['img'])):
+                results['img'][idx] = np.zeros_like(results['img'][idx])
+        elif choose == 1:
+            # lidar drop
+            results['points'].tensor[:] = 0
+        results['smt_number'] = choose
+
         return results

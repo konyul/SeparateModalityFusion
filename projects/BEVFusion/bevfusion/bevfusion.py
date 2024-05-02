@@ -190,18 +190,13 @@ class BEVFusion(Base3DDetector):
         img_metas,
         pts_feats,
         pts_metas,
-        fg_bg_mask_list=None
+        fg_bg_mask_list=None,
+        sensor_list=None,
+        batch_input_metas=None
     ) -> torch.Tensor:
 
         B, N, C, H, W = x.size()
         x = x.view(B * N, C, H, W).contiguous()
-        self.visualize_feat(x[0],'0')
-        self.visualize_feat(x[1],'1')
-        self.visualize_feat(x[2],'2')
-        self.visualize_feat(x[3],'3')
-        self.visualize_feat(x[4],'4')
-        self.visualize_feat(x[5],'5')
-        import pdb;pdb.set_trace()
         x = self.img_backbone(x)
         x = self.img_neck(x)
         if not isinstance(x, torch.Tensor):
@@ -209,7 +204,7 @@ class BEVFusion(Base3DDetector):
 
         BN, C, H, W = x.size()
         if self.imgpts_neck is not None:
-            x, pts_feats, mask_loss = self.imgpts_neck(x, pts_feats, img_metas, pts_metas, fg_bg_mask_list)
+            x, pts_feats, mask_loss = self.imgpts_neck(x, pts_feats, img_metas, pts_metas, fg_bg_mask_list, sensor_list, batch_input_metas)
             x = x.contiguous()
         x = x.view(B, int(BN / B), C, H, W)
         with torch.autocast(device_type='cuda', dtype=torch.float32):
@@ -301,6 +296,7 @@ class BEVFusion(Base3DDetector):
         batch_inputs_dict,
         batch_input_metas,
         fg_bg_mask_list=None,
+        sensor_list=None,
         **kwargs,
     ):
         imgs = batch_inputs_dict.get('imgs', None)
@@ -332,12 +328,14 @@ class BEVFusion(Base3DDetector):
                                                 batch_input_metas,
                                                 pts_feature,
                                                 pts_metas,
-                                                fg_bg_mask_list)
+                                                fg_bg_mask_list,
+                                                sensor_list,
+                                                batch_input_metas)
             features.append(img_feature)
         features.append(pts_feature)
         if self.fusion_layer is not None:
             if 'mask_ratio' in self.fusion_layer.__dict__:
-                x, pts_loss = self.fusion_layer(features, fg_bg_mask_list)
+                x, pts_loss = self.fusion_layer(features, fg_bg_mask_list, sensor_list, batch_input_metas)
             else:
                 x = self.fusion_layer(features)
                 pts_loss = None
@@ -407,17 +405,11 @@ class BEVFusion(Base3DDetector):
             fg_bg_mask_list = self.fg_bg_mask(batch_data_samples)
         else:
             fg_bg_mask_list = None
-        if self.smt:
-            batch = len(batch_inputs_dict['points'])
-            prob = np.random.uniform()
-            for B in range(batch):
-                cam_drop = prob < 1/3
-                lidar_drop = prob > 1/3 and prob < 2/3
-                if cam_drop:
-                    batch_inputs_dict['imgs'][B][:] = 0
-                elif lidar_drop:
-                    batch_inputs_dict['points'][B][:] = 0
-        feats, mask_loss, pts_loss = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list)
+        if 'sensor_list' in batch_inputs_dict:
+            sensor_list = batch_inputs_dict['sensor_list']
+        else:
+            sensor_list = None
+        feats, mask_loss, pts_loss = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list, sensor_list)
         losses = dict()
         if self.with_bbox_head:
             bbox_loss = self.bbox_head.loss(feats, batch_data_samples)

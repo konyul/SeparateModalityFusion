@@ -5,7 +5,7 @@ from .loading import BEVLoadMultiViewImageFromFiles
 from .sparse_encoder import BEVFusionSparseEncoder
 from .transformer import TransformerDecoderLayer
 from .transforms_3d import (BEVFusionGlobalRotScaleTrans,
-                            BEVFusionRandomFlip3D, GridMask, ImageAug3D)
+                            BEVFusionRandomFlip3D, GridMask, ImageAug3D, SwitchedModality)
 from .transfusion_head import (ConvFuser, TransFusionHead, ModalitySpecificLocalCrossAttention, GatedNetwork, ModalitySpecificLocalCrossAttentionlayer,
                                ModalitySpecificLocalCrossAttentionMask, ModalitySpecificLocalAttentionMask, ModalitySpecificDecoderMask)
 from .utils import (BBoxBEVL1Cost, HeuristicAssigner3D, HungarianAssigner3D,
@@ -20,5 +20,5 @@ __all__ = [
     'TransformerDecoderLayer', 'BEVFusionRandomFlip3D',
     'BEVFusionGlobalRotScaleTrans', 'ModalitySpecificLocalCrossAttention', 'DeepInteractionEncoder', 'GatedNetwork',
     'ModalitySpecificLocalCrossAttentionlayer', 'ModalitySpecificLocalCrossAttentionMask', 'ModalitySpecificLocalAttentionMask',
-    'ModalitySpecificDecoderMask'
+    'ModalitySpecificDecoderMask', 'SwitchedModality'
 ]
