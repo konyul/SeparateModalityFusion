@@ -1,33 +1,18 @@
 _base_ = [
-    '../bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d_img_mask.py'
+    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d_img_mask_pers.py'
 ]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 input_modality = dict(use_lidar=True, use_camera=True)
 backend_args = None
 
-beam_reduction=False
-spatial_misalignment=False
-lidar_stuck=False
-camera_stuck=False
-limited_fov=False
-object_failure=False
-random_drop_points=0.1
-camera_view_drop=False
-if camera_view_drop==True:
-    mean=[0,0,0]
-    std=[1,1,1]
-else:
-    mean=[123.675, 116.28, 103.53]
-    std=[58.395, 57.12, 57.375]  
-
 model = dict(
     type='BEVFusion',
+    freeze_img=True,
+    sep_fg=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
-        # mean=[123.675, 116.28, 103.53],
-        # std=[58.395, 57.12, 57.375],
-        mean=mean,
-        std=std,
+        mean=[123.675, 116.28, 103.53],
+        std=[58.395, 57.12, 57.375],
         bgr_to_rgb=False),
     img_backbone=dict(
         type='mmdet.SwinTransformer',
@@ -132,6 +117,7 @@ train_pipeline = [
         prob=0.0,
         fixed_prob=True),
     dict(type='PointShuffle'),
+    dict(type='SwitchedModality', modal_prob=[1/3, 1/3, 1/3]),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -143,7 +129,7 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats'
+            'lidar_aug_matrix', 'num_pts_feats','smt_number'
         ])
 ]
 
@@ -152,15 +138,13 @@ test_pipeline = [
         type='BEVLoadMultiViewImageFromFiles',
         to_float32=True,
         color_type='color',
-        backend_args=backend_args,
-        camera_view_drop=camera_view_drop),
+        backend_args=backend_args),
     dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
         use_dim=5,
-        backend_args=backend_args,
-        reduce_beams=beam_reduction),
+        backend_args=backend_args),
     dict(
         type='LoadPointsFromMultiSweeps',
         sweeps_num=9,
@@ -168,13 +152,7 @@ test_pipeline = [
         use_dim=5,
         pad_empty_sweeps=True,
         remove_close=True,
-        backend_args=backend_args,
-        reduce_beams=beam_reduction,
-        limited_fov=limited_fov),
-    dict(type='Randomdropforeground',
-        object_failure=object_failure),
-    dict(type='Randomdroppoints',
-        random_drop_points=random_drop_points),
+        backend_args=backend_args),
     dict(
         type='ImageAug3D',
         final_dim=[256, 704],
@@ -196,20 +174,11 @@ test_pipeline = [
         ])
 ]
 
-if object_failure:
-    test_pipeline.insert(3,
-    dict(
-        type='LoadAnnotations3D',
-        with_bbox_3d=True,
-        with_label_3d=False,
-        with_attr_label=False))
-
-
 train_dataloader = dict(
     dataset=dict(
         dataset=dict(pipeline=train_pipeline, modality=input_modality)))
 val_dataloader = dict(
-    dataset=dict(pipeline=test_pipeline, modality=input_modality, spatial_misalignment=spatial_misalignment, lidar_stuck=lidar_stuck, camera_stuck=camera_stuck, object_failure=object_failure))
+    dataset=dict(pipeline=test_pipeline, modality=input_modality))
 test_dataloader = val_dataloader
 
 param_scheduler = [
@@ -253,8 +222,8 @@ test_cfg = dict()
 
 optim_wrapper = dict(
     type='OptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.01),
-    clip_grad=dict(max_norm=35, norm_type=2))
+    optimizer=dict(type='AdamW', lr=0.00002, weight_decay=0.01),
+    clip_grad=dict(max_norm=10, norm_type=2))
 
 # Default setting for scaling LR automatically
 #   - `enable` means enable scaling LR automatically
@@ -267,4 +236,6 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=1))
 del _base_.custom_hooks
 
-load_from = './pretrained/convert_weight.pth'
+#load_from = './pretrained/convert_weight.pth'
+load_from = './masked_pretrained.pth'
+find_unused_parameters=True

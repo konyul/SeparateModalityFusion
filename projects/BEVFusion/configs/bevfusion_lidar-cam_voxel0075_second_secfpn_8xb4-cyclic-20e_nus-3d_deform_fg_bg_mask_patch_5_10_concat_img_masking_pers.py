@@ -117,7 +117,7 @@ train_pipeline = [
         prob=0.0,
         fixed_prob=True),
     dict(type='PointShuffle'),
-    dict(type='SwitchedModality', modal_prob=[1/3, 1/3, 1/3]),
+    dict(type='SwitchedModality', modal_prob=[0, 0, 1]),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -216,14 +216,14 @@ param_scheduler = [
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=5)
 val_cfg = dict()
 test_cfg = dict()
 
 optim_wrapper = dict(
     type='OptimWrapper',
-    optimizer=dict(type='AdamW', lr=0.00002, weight_decay=0.01),
-    clip_grad=dict(max_norm=10, norm_type=2))
+    optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.01),
+    clip_grad=dict(max_norm=35, norm_type=2))
 
 # Default setting for scaling LR automatically
 #   - `enable` means enable scaling LR automatically
@@ -236,6 +236,5 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=1))
 del _base_.custom_hooks
 
-#load_from = './pretrained/convert_weight.pth'
-load_from = 'work_dirs/masking_strategy/version2/perspective_sota/epoch_5.pth'
+load_from = './pretrained/convert_weight.pth'
 find_unused_parameters=True

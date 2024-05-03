@@ -69,9 +69,7 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2),
-    fusion_layer=dict(
-        type='ConvFuser', in_channels=[80, 256], out_channels=256))
+        downsample=2))
 
 train_pipeline = [
     dict(
