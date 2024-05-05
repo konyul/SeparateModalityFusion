@@ -387,63 +387,96 @@ class BEVWarp(nn.Module):
             cv2.circle(Img,(int(coor[0].item()),int(coor[1].item())), 5,(0,0,255))
         cv2.imwrite(f"pts_{idx}.jpg",Img)
 
-    def forward(self, lidar_feats, img_feats, img_metas, pts_metas, **kwargs):
+
+    def project_lidar_to_cam(self, pts_3d_, img_meta):
+        img_aug_matrix = pts_3d_.new_tensor(img_meta['img_aug_matrix'])
+        if 'lidar_aug_matrix' in img_meta:
+            lidar_aug_matrix = pts_3d_.new_tensor(img_meta['lidar_aug_matrix'])
+        else:
+            lidar_aug_matrix = torch.eye(4).cuda()
+        lidar2image = pts_3d_.new_tensor(img_meta['lidar2img'])
+
+        pts_3d = pts_3d_.clone()
+        # inverse aug
+        pts_3d -= lidar_aug_matrix[:3, 3]
+        pts_3d = torch.inverse(lidar_aug_matrix[:3, :3]).matmul(pts_3d.transpose(1, 0))
+        # lidar2image
+        pts_3d = lidar2image[:, :3, :3].matmul(pts_3d)
+        pts_3d += lidar2image[:, :3, 3].reshape(-1, 3, 1)
+        # get 2d coords
+        dist = pts_3d[:, 2, :]
+        pts_3d[:, 2, :] = torch.clamp(pts_3d[:, 2, :], 1e-5, 1e5)
+        pts_3d[:, :2, :] /= pts_3d[:, 2:3, :]
+        # imgaug
+        pts_3d = img_aug_matrix[:, :3, :3].matmul(pts_3d)
+        pts_3d += img_aug_matrix[:, :3, 3].reshape(-1, 3, 1)
+        #pts_3d = pts_3d[:, :2, :].transpose(1, 2)
+        pts_3d = pts_3d[:, :, :].transpose(1, 2)
+
+        return pts_3d
+
+
+    def forward(self, lidar_feats, img_feats, img_metas, pts_metas, batch_index, img=None, points=None):
         batch_size, num_views, I_C, I_H, I_W = img_feats.shape
-        lidar2img = []
-        for img_meta in img_metas:
-            lidar2img.append(img_meta['lidar2img'])
-        lidar2img = np.asarray(lidar2img)
+        # lidar2img = []
+        # for img_meta in img_metas:
+        #     lidar2img.append(img_meta['lidar2img'])
+        # lidar2img = np.asarray(lidar2img)
+        lidar2img = np.asarray(img_metas['lidar2img'])
         lidar2img = img_feats.new_tensor(lidar2img)
         img2lidar = torch.inverse(lidar2img)
         pts = pts_metas['pts']
         decorated_img_feats = []
-        for b in range(batch_size):
-            img_feat = img_feats[b]
-            #ori_H, ori_W = img_metas[b]['batch_input_shape']
-            ori_H, ori_W = 900, 1600
-            pts_3d = pts[b][...,:3]
-            pts_3d = apply_3d_transformation(pts_3d, 'LIDAR', img_metas[b], reverse=True).detach()
-            pts_4d = torch.cat((pts_3d,torch.ones_like(pts_3d[...,:1])),dim=-1).unsqueeze(0).unsqueeze(-1)
-            proj_mat = lidar2img[b].unsqueeze(1)
-            pts_2d = torch.matmul(proj_mat, pts_4d).squeeze(-1)
-            eps = 1e-5
-            depth = pts_2d[..., 2:3]
-            mask = (pts_2d[..., 2:3] > eps)
-            pts_2d = pts_2d[..., 0:2] / torch.maximum(pts_2d[..., 2:3], torch.ones_like(pts_2d[..., 2:3])*eps)
+        b = batch_index
+        img_feat = img_feats[0]
+        ori_H, ori_W = 256, 704
+        pts_3d = pts[b][...,:3]
+        pts_2d = self.project_lidar_to_cam(pts_3d, img_metas)
+        depth = pts_2d[..., 2:3]
+        proj_x = (pts_2d[...,0:1] / ori_W - 0.5) * 2
+        proj_y = (pts_2d[...,1:2] / ori_H - 0.5) * 2
+        mask = (proj_x > -1.0) & (proj_x < 1.0) & (proj_y > -1.0) & (proj_y < 1.0)
+        mask = torch.nan_to_num(mask)
+        
+        
+        # feat = img[6*batch_index].cpu().detach().numpy()
+        # min = feat.min()
+        # max = feat.max()
+        # image_features = (feat-min)/(max-min)
+        # image_features = (image_features*255)
+        # max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        # Img = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        # i_coor = pts_2d[0][mask[0, :, 0]]
+        # for coor in i_coor:
+        #     cv2.circle(Img,(int(coor[0].item()),int(coor[1].item())), 1,(0,0,255))
+        # cv2.imwrite('test.jpg', Img)
 
-            proj_x = (pts_2d[...,0:1] / ori_W - 0.5) * 2
-            proj_y = (pts_2d[...,1:2] / ori_H - 0.5) * 2
-            mask = (mask & (proj_x > -1.0) 
-                             & (proj_x < 1.0) 
-                             & (proj_y > -1.0) 
-                             & (proj_y < 1.0))
-            mask = torch.nan_to_num(mask)
-            depth_map = img_feat.new_zeros(num_views, I_H, I_W)
-            for i in range(num_views):
-                depth_map[i, (pts_2d[i,mask[i,:,0],1]/ori_H*I_H).long(), (pts_2d[i,mask[i,:,0],0]/ori_W*I_W).long()] = depth[i,mask[i,:,0],0]
-            fill_type = 'multiscale'
-            extrapolate = False
-            blur_type = 'bilateral'
-            for i in range(num_views):
-                final_depths, _ = fill_in_multiscale(
-                                depth_map[i].detach().cpu().numpy(), extrapolate=extrapolate, blur_type=blur_type,
-                                show_process=False)
-                depth_map[i] = depth_map.new_tensor(final_depths)
-            xs = torch.linspace(0, ori_W - 1, I_W, dtype=torch.float32).to(depth_map.device).view(1, 1, I_W).expand(num_views, I_H, I_W)
-            ys = torch.linspace(0, ori_H - 1, I_H, dtype=torch.float32).to(depth_map.device).view(1, I_H, 1).expand(num_views, I_H, I_W)
-            xyd = torch.stack((xs, ys, depth_map, torch.ones_like(depth_map)), dim = -1)
-            xyd [..., 0] *= xyd [..., 2]
-            xyd [..., 1] *= xyd [..., 2]
-            xyz = img2lidar[b].view(num_views,1,1,4,4).matmul(xyd.unsqueeze(-1)).squeeze(-1)[...,:3] #(6,112,200,3)
-            xyz = apply_3d_transformation(xyz.view(num_views*I_H*I_W, 3), 'LIDAR', img_metas[b], reverse=False).view(num_views, I_H, I_W, 3).detach()
-            pc_range = xyz.new_tensor([-54, -54, -5, 54, 54, 3])  #TODO: fix it to support other outdoor dataset!!!
-            lift_mask = (xyz[...,0] > pc_range[0]) & (xyz[...,1] > pc_range[1]) & (xyz[...,2] > pc_range[2])\
-                        & (xyz[...,0] < pc_range[3]) & (xyz[...,1] < pc_range[4]) & (xyz[...,2] < pc_range[5])
-            xy_bev = (xyz[...,0:2] - pc_range[0:2]) / (pc_range[3:5] - pc_range[0:2])
-            xy_bev = (xy_bev - 0.5) * 2
-            decorated_img_feat = F.grid_sample(lidar_feats[b].unsqueeze(0).repeat(num_views,1,1,1), xy_bev, align_corners=False).permute(0,2,3,1) #N, H, W, C
-            decorated_img_feat[~lift_mask]=0
-            decorated_img_feats.append(decorated_img_feat.permute(0,3,1,2))
+        depth_map = img_feat.new_zeros(num_views, I_H, I_W)
+        for i in range(num_views):
+            depth_map[i, (pts_2d[i,mask[i,:,0],1]/ori_H*I_H).long(), (pts_2d[i,mask[i,:,0],0]/ori_W*I_W).long()] = depth[i,mask[i,:,0],0]
+        fill_type = 'multiscale'
+        extrapolate = False
+        blur_type = 'bilateral'
+        for i in range(num_views):
+            final_depths, _ = fill_in_multiscale(
+                            depth_map[i].detach().cpu().numpy(), extrapolate=extrapolate, blur_type=blur_type,
+                            show_process=False)
+            depth_map[i] = depth_map.new_tensor(final_depths)
+        xs = torch.linspace(0, ori_W - 1, I_W, dtype=torch.float32).to(depth_map.device).view(1, 1, I_W).expand(num_views, I_H, I_W)
+        ys = torch.linspace(0, ori_H - 1, I_H, dtype=torch.float32).to(depth_map.device).view(1, I_H, 1).expand(num_views, I_H, I_W)
+        xyd = torch.stack((xs, ys, depth_map, torch.ones_like(depth_map)), dim = -1)
+        xyd [..., 0] *= xyd [..., 2]
+        xyd [..., 1] *= xyd [..., 2]
+        xyz = img2lidar.view(num_views,1,1,4,4).matmul(xyd.unsqueeze(-1)).squeeze(-1)[...,:3] #(6,112,200,3)
+        xyz = apply_3d_transformation(xyz.view(num_views*I_H*I_W, 3), 'LIDAR', img_metas, reverse=False).view(num_views, I_H, I_W, 3).detach()
+        pc_range = xyz.new_tensor([-54, -54, -5, 54, 54, 3])  #TODO: fix it to support other outdoor dataset!!!
+        lift_mask = (xyz[...,0] > pc_range[0]) & (xyz[...,1] > pc_range[1]) & (xyz[...,2] > pc_range[2])\
+                    & (xyz[...,0] < pc_range[3]) & (xyz[...,1] < pc_range[4]) & (xyz[...,2] < pc_range[5])
+        xy_bev = (xyz[...,0:2] - pc_range[0:2]) / (pc_range[3:5] - pc_range[0:2])
+        xy_bev = (xy_bev - 0.5) * 2
+        decorated_img_feat = F.grid_sample(lidar_feats[0].unsqueeze(0).repeat(num_views,1,1,1), xy_bev, align_corners=False).permute(0,2,3,1) #N, H, W, C
+        decorated_img_feat[~lift_mask]=0
+        decorated_img_feats.append(decorated_img_feat.permute(0,3,1,2))
         decorated_img_feats = torch.stack(decorated_img_feats, dim=0)
         return decorated_img_feats
 
@@ -595,7 +628,7 @@ class DeformableTransformer_pers(nn.Module):
         #cv2.imwrite(f"max_{idx}.jpg",sum_image_feature)
         cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
 
-    def forward_single(self, img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
+    def forward_single(self, img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, batch_index, sensor_list=None, img=None, points=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
             residual_img = img_feat.clone()
@@ -620,7 +653,16 @@ class DeformableTransformer_pers(nn.Module):
 
         if self.mask_img:
             _s_proj = self._input_proj[0](_src)
-            _target = pts_feat.clone()
+            if self.fusion_method:
+                batch_size = pts_feat.shape[0]
+                BN, I_C, I_H, I_W = img_feat.shape
+                warped_img_feats = self.Warp(pts_feat.clone(), img_feat.view(batch_size, -1, I_C, I_H, I_W), img_metas, pts_metas, batch_index, img=img, points=points)
+                B, N, C, H, W = warped_img_feats.shape
+                warped_img_feats = warped_img_feats.view(B*N,C,H,W)
+                # self.visualize_feat(warped_img_feats[0],'0_lidar_feat')
+                _target = warped_img_feats
+            else:
+                _target = pts_feat.clone()
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 _t_proj = self._target_proj[0](_target)
             else:
@@ -654,7 +696,7 @@ class DeformableTransformer_pers(nn.Module):
 
     def forward(
         self, 
-        img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, sensor_list=None, batch_input_metas=None
+        img_feat, pts_feat, img_metas, pts_metas, fg_bg_mask_list, sensor_list=None, batch_input_metas=None, img=None, points=None
     ) -> torch.Tensor:
         batch = len(batch_input_metas)
         loss_list, img_feat_list, pts_feat_list = [], [], []
@@ -671,7 +713,7 @@ class DeformableTransformer_pers(nn.Module):
             else:
                 fg_bg_mask_list_ = None
                 sensor_list_ = None
-            _img_feat, _pts_feat, loss_l = self.forward_single(img_feat_, pts_feat_, img_metas_, pts_metas_, fg_bg_mask_list_, sensor_list_)
+            _img_feat, _pts_feat, loss_l = self.forward_single(img_feat_, pts_feat_, img_metas_, pts_metas_, fg_bg_mask_list_, b, sensor_list_, img=img, points=points)
             img_feat_list.append(_img_feat)
             pts_feat_list.append(_pts_feat)
             loss_list.append(loss_l)

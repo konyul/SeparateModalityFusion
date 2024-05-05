@@ -197,6 +197,7 @@ class BEVFusion(Base3DDetector):
 
         B, N, C, H, W = x.size()
         x = x.view(B * N, C, H, W).contiguous()
+        # x_ = x.clone()
         x = self.img_backbone(x)
         x = self.img_neck(x)
         if not isinstance(x, torch.Tensor):
@@ -204,7 +205,7 @@ class BEVFusion(Base3DDetector):
 
         BN, C, H, W = x.size()
         if self.imgpts_neck is not None:
-            x, pts_feats, mask_loss = self.imgpts_neck(x, pts_feats, img_metas, pts_metas, fg_bg_mask_list, sensor_list, batch_input_metas)
+            x, pts_feats, mask_loss = self.imgpts_neck(x, pts_feats, img_metas, pts_metas, fg_bg_mask_list, sensor_list, batch_input_metas)#, img=x_, points=points)
             x = x.contiguous()
         x = x.view(B, int(BN / B), C, H, W)
         with torch.autocast(device_type='cuda', dtype=torch.float32):

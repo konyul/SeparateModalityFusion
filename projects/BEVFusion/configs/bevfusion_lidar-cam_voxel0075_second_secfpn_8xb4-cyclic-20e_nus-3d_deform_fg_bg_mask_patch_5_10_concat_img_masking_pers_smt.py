@@ -216,7 +216,7 @@ param_scheduler = [
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=1)
+train_cfg = dict(by_epoch=True, max_epochs=6, val_interval=5)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -237,5 +237,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './masked_pretrained.pth'
+load_from = './work_dirs/masking_strategy/version2/final/epoch_5.pth'
 find_unused_parameters=True
