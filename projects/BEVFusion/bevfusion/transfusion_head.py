@@ -250,7 +250,6 @@ class DeformableTransformer(nn.Module):
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2).clone()
-                inputs[0] = self.linear(inputs[0])
                 _src, img_mask = self.random_patch_masking(inputs[0])
         else:
             _src = inputs[0].clone()
@@ -294,11 +293,13 @@ class DeformableTransformer(nn.Module):
                 bg_loss = (bg_loss * img_mask).sum() / (bg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
                 img_fg_loss = self.loss_weight * fg_loss
                 img_bg_loss = self.loss_weight * bg_loss
+                img_feat = img_feat.transpose(1,2).view(1,80,180,180)
             else:
                 loss = (img_feat - img_target) ** 2
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
                 img_loss = self.loss_weight * loss
+                img_feat = img_feat.transpose(1,2).view(1,80,180,180)
         if _mask and inputs[0].requires_grad:
             loss_list = dict()
             if fg_bg_mask_list is not None:
@@ -308,14 +309,14 @@ class DeformableTransformer(nn.Module):
                 if self.mask_img:
                     loss_list['img_fg_loss'] = img_fg_loss
                     loss_list['img_bg_loss'] = img_bg_loss
-                return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), loss_list
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
             else:
                 if self.mask_pts:
                     loss_list['pts_loss'] = pts_loss
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), loss_list
-        return self.conv(torch.cat([inputs[0], pts_feat], dim=1)), False
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
+        return self.conv(torch.cat([img_feat, pts_feat], dim=1)), False
 
     def forward(
         self, 
