@@ -217,8 +217,6 @@ class DeformableTransformer(nn.Module):
             pts_feat = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
             pts_feat = self.pred(pts_feat)
             pts_feat = pts_feat.contiguous()
-            if self.residual == 'sum':
-                pts_feat += residual_pts
         
         if _mask and inputs[1].requires_grad and self.mask_pts:
             pts_feat = pts_feat.flatten(2).transpose(1, 2)         
@@ -246,6 +244,8 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
                 pts_feat = pts_feat.transpose(1,2).view(1,256,180,180)
+        if self.residual == 'sum':
+            pts_feat += residual_pts
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
@@ -271,8 +271,6 @@ class DeformableTransformer(nn.Module):
             img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
             img_feat = self._pred(img_feat)
             img_feat = img_feat.contiguous()
-            if self.residual == 'sum':
-                img_feat += residual_img
         
         if _mask and inputs[0].requires_grad and self.mask_img:
             img_feat = img_feat.flatten(2).transpose(1, 2)         
@@ -300,6 +298,8 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
                 img_loss = self.loss_weight * loss
                 img_feat = img_feat.transpose(1,2).view(1,80,180,180)
+        if self.residual == 'sum':
+            img_feat += residual_img
         if _mask and inputs[0].requires_grad:
             loss_list = dict()
             if fg_bg_mask_list is not None:

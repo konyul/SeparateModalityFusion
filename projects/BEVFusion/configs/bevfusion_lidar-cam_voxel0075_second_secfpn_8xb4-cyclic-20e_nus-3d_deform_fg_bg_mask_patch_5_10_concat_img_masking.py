@@ -9,7 +9,6 @@ model = dict(
     type='BEVFusion',
     freeze_img=True,
     sep_fg=True,
-    smt=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
