@@ -94,7 +94,7 @@ class LearnedPositionalEncoding(BaseModule):
         repr_str += f'row_num_embed={self.row_num_embed}, '
         repr_str += f'col_num_embed={self.col_num_embed})'
         return repr_str
-
+    
 
 @MODELS.register_module()
 class DeformableTransformer(nn.Module):
@@ -103,9 +103,10 @@ class DeformableTransformer(nn.Module):
         super().__init__()
         self.mask_freq = kwargs.pop("mask_freq")
         self.mask_ratio = kwargs.pop("mask_ratio")
-        self.mask_pts = kwargs.pop("mask_pts", False)
-        self.mask_img = kwargs.pop("mask_img", False)
-        self.fusion_method = kwargs.get('fusion_method',False)
+        
+        self.mask_img=kwargs.pop("mask_img", False)
+        self.mask_pts=kwargs.pop("mask_pts", False)
+        self.fusion_method=kwargs.get('fusion_method',False)
         self.mask_method = kwargs.get('mask_method', 'point')
         if 'patch' in self.mask_method:
             self.patch_cfg = kwargs.get('patch_cfg', None)
@@ -119,9 +120,10 @@ class DeformableTransformer(nn.Module):
             self.loss_weight = 1
         if self.mask_pts:
             self.model = build_deforamble_transformer(**kwargs)
-        self.bev_encoder = PtsEncoder(**kwargs['bev_encoder'])
+        self.pts_bev_encoder = PtsEncoder(**kwargs['pts_encoder'])
+        self.img_bev_encoder = PtsEncoder(**kwargs['img_encoder'])
         pts_channels = 256
-        img_channels = 80
+        img_channels = 80     
         if self.mask_img:
             img_kwargs = copy.deepcopy(kwargs)
             img_kwargs['d_model'] = img_channels
@@ -168,12 +170,17 @@ class DeformableTransformer(nn.Module):
         if self.mask_img:
             self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
             self._pred = nn.Conv2d(img_channels, img_channels, kernel_size=1)
+            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
-        self.embedding = nn.Embedding(
+        self.pts_embedding = nn.Embedding(
             180 * 180, 256)
-        self.positional_encoding = LearnedPositionalEncoding(
+        self.img_embedding = nn.Embedding(
+            180 * 180, 80)
+        self.pts_positional_encoding = LearnedPositionalEncoding(
             num_feats=128, row_num_embed=180, col_num_embed=180)
+        self.img_positional_encoding = LearnedPositionalEncoding(
+            num_feats=40, row_num_embed=180, col_num_embed=180)
         self.pts_level_embeds = nn.Parameter(torch.Tensor(
                 1, 256))
         self.img_level_embeds = nn.Parameter(torch.Tensor(
@@ -215,12 +222,12 @@ class DeformableTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
         
-    def random_patch_masking(self, _x, token_type=None):
+    def random_patch_masking(self, _x):
         x = _x.clone()
         B, D, W, H = x.shape
-        if token_type == 'pts':
+        if D == 256:
             mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
-        elif token_type == 'img':
+        elif D == 80:
             mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
 
         mask = torch.zeros([B, W, H], device=x.device)
@@ -238,7 +245,6 @@ class DeformableTransformer(nn.Module):
                 mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
 
         return x, mask.flatten(1)
-    
     def visualize_feat(self, bev_feat, idx):
         feat = bev_feat.cpu().detach().numpy()
         min = feat.min()
@@ -248,8 +254,8 @@ class DeformableTransformer(nn.Module):
         max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
         max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
         cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
-        
-    def _pre_process_feats(self, mlvl_pts_feats, bev_queries, modal_type=None):
+
+    def _pre_process_pts_feats(self, mlvl_pts_feats, bev_queries):
         ## process multi-level points features
         pts_feat_flatten = []
         pts_spatial_shapes = []
@@ -259,9 +265,9 @@ class DeformableTransformer(nn.Module):
         pts_spatial_shape = (h, w)
         feat = feat.flatten(2).permute(0, 2, 1)
         # print(' feat size:', feat.size()) # [2, 40000, 512]
-        if modal_type == 'img':
+        if bev_queries.shape[-1] == 80:
             feat = feat + self.img_level_embeds[None, lvl:lvl + 1, :].to(feat.dtype)
-        elif modal_type == 'pts':    
+        else:    
             feat = feat + self.pts_level_embeds[None, lvl:lvl + 1, :].to(feat.dtype)
         pts_spatial_shapes.append(pts_spatial_shape)
         pts_feat_flatten.append(feat)
@@ -274,8 +280,8 @@ class DeformableTransformer(nn.Module):
 
         return pts_feat_flatten, pts_spatial_shapes, pts_level_start_index
 
+    
     def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
-        # image feature, points feature
         if self.residual:
             residual_pts = inputs[1].clone()
             residual_img = inputs[0].clone()
@@ -283,35 +289,43 @@ class DeformableTransformer(nn.Module):
         prob = np.random.uniform()
         _mask = prob < self.mask_freq
         
-        ## points
+        dtype = inputs[0].dtype
+        bev_queries_img = self.img_embedding.weight.to(dtype)
+        bev_queries_pts = self.pts_embedding.weight.to(dtype)
+        bev_queries_img = bev_queries_img.unsqueeze(1).repeat(1, 1, 1)
+        bev_queries_pts = bev_queries_pts.unsqueeze(1).repeat(1, 1, 1)
         
+        ## points
         if _mask and inputs[1].requires_grad and self.mask_pts:
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2).clone()
-                src, pts_mask = self.random_patch_masking(inputs[1], token_type='pts')
+                src, pts_mask = self.random_patch_masking(inputs[1])
         else:
             src = inputs[1].clone()
-        
+        device=inputs[0].device
+        bev_mask = torch.zeros((1, 180, 180),
+                               device=device).to(dtype)
+        pts_bev_pos = self.pts_positional_encoding(bev_mask).to(dtype)
+        img_bev_pos = self.img_positional_encoding(bev_mask).to(dtype)
+        pts_bev_pos = pts_bev_pos.flatten(2).permute(2, 0, 1)
+        img_bev_pos = img_bev_pos.flatten(2).permute(2, 0, 1)
         if self.mask_pts:
-            s_proj = self.input_proj[0](src)
-            target = inputs[0].clone()
-            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-                t_proj = self.target_proj[0](target)
-            else:
-                t_proj = target
-            masks = torch.zeros(
-                    (s_proj.shape[0], s_proj.shape[2], s_proj.shape[3]),
-                    dtype=torch.bool,
-                    device=s_proj.device,
-                )
-            pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
-                    s_proj.dtype)
-            pts_feat = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
-            pts_feat = self.pred(pts_feat)
-            pts_feat = pts_feat.contiguous()
-            if self.residual == 'sum':
-                pts_feat += residual_pts
-        
+            pts_feat_flatten, pts_spatial_shapes, pts_level_start_index = self._pre_process_pts_feats(src, bev_queries_pts)
+            # self.visualize_feat(bev_queries_pts.squeeze().transpose(0,1).view(256,180,180),'bev_query')
+            # self.visualize_feat(pts_feat_flatten.squeeze().transpose(0,1).view(256,180,180),'pts_feat_flatten')
+            pts_bev_embed = self.pts_bev_encoder(
+                bev_queries_pts,
+                pts_feat_flatten,
+                pts_feat_flatten,
+                bev_h=180,
+                bev_w=180,
+                bev_pos=pts_bev_pos,
+                spatial_shapes=pts_spatial_shapes,
+                level_start_index=pts_level_start_index) # encoder.batch_first = True: (bs, bev_h*bev_w, embed_dims)
+            # self.visualize_feat(pts_bev_embed.squeeze().transpose(0,1).view(256,180,180),'pts_bev_embed')
+            pts_bev_embed = pts_bev_embed.transpose(1,2).view(1,256,180,180)
+            # pts_feat = self.pred(pts_bev_embed)
+            pts_feat = pts_bev_embed.contiguous()
         if _mask and inputs[1].requires_grad and self.mask_pts:
             pts_feat = pts_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
@@ -338,33 +352,34 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
                 pts_feat = pts_feat.transpose(1,2).view(1,256,180,180)
+        if self.residual == 'sum':
+            pts_feat += residual_pts
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2).clone()
-                _src, img_mask = self.random_patch_masking(inputs[0], token_type='img')
+                _src, img_mask = self.random_patch_masking(inputs[0])
         else:
             _src = inputs[0].clone()
         
         if self.mask_img:
-            _s_proj = self._input_proj[0](_src)
-            _target = inputs[1].clone()
-            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
-                _t_proj = self._target_proj[0](_target)
-            else:
-                _t_proj = _target
-            _masks = torch.zeros(
-                    (_s_proj.shape[0], _s_proj.shape[2], _s_proj.shape[3]),
-                    dtype=torch.bool,
-                    device=_s_proj.device,
-                )
-            _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
-                    _s_proj.dtype)
-            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
-            img_feat = self._pred(img_feat)
-            img_feat = img_feat.contiguous()
-            if self.residual == 'sum':
-                img_feat += residual_img
+            img_feat_flatten, img_spatial_shapes, img_level_start_index = self._pre_process_pts_feats(_src, bev_queries_img)
+            # self.visualize_feat(bev_queries_img.squeeze().transpose(0,1).view(80,180,180),'bev_query_img')
+            # self.visualize_feat(img_feat_flatten.squeeze().transpose(0,1).view(80,180,180),'img_feat_flatten')
+            img_bev_embed = self.img_bev_encoder(
+                bev_queries_img,
+                img_feat_flatten,
+                img_feat_flatten,
+                bev_h=180,
+                bev_w=180,
+                bev_pos=img_bev_pos,
+                spatial_shapes=img_spatial_shapes,
+                level_start_index=img_level_start_index) # encoder.batch_first = True: (bs, bev_h*bev_w, embed_dims)
+            # self.visualize_feat(img_bev_embed.squeeze().transpose(0,1).view(80,180,180),'img_bev_embed')
+            img_bev_embed = img_bev_embed.transpose(1,2).view(1,80,180,180)
+            # img_feat = self._pred(img_bev_embed)
+            img_feat = img_bev_embed.contiguous()
+        
         if _mask and inputs[0].requires_grad and self.mask_img:
             img_feat = img_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
@@ -391,27 +406,8 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
                 img_loss = self.loss_weight * loss
                 img_feat = img_feat.transpose(1,2).view(1,80,180,180)
-        dtype = inputs[0].dtype
-        device=inputs[0].device
-        bev_queries = self.embedding.weight.to(dtype)
-        bev_queries = bev_queries.unsqueeze(1).repeat(1, 1, 1)
-        bev_mask = torch.zeros((1, 180, 180),
-                               device=device).to(dtype)
-        bev_pos = self.positional_encoding(bev_mask).to(dtype)
-        bev_pos = bev_pos.flatten(2).permute(2, 0, 1)
-        pts_feat_flatten, pts_spatial_shapes, pts_level_start_index = self._pre_process_feats(pts_feat, bev_queries, 'pts')
-        img_feat_flatten, _, _ = self._pre_process_feats(img_feat, bev_queries, 'img')
-        bev_embed = self.bev_encoder(
-            bev_queries,
-            pts_feat_flatten,
-            pts_feat_flatten,
-            bev_h=180,
-            bev_w=180,
-            bev_pos=bev_pos,
-            cross_modal_feat=img_feat_flatten,
-            spatial_shapes=pts_spatial_shapes,
-            level_start_index=pts_level_start_index) # encoder.batch_first = True: (bs, bev_h*bev_w, embed_dims)
-        bev_embed = bev_embed.view(1,180,180,256).permute(0,3,1,2).contiguous()
+        if self.residual == 'sum':
+                img_feat += residual_img
         if _mask and inputs[0].requires_grad:
             loss_list = dict()
             if fg_bg_mask_list is not None:
@@ -421,14 +417,14 @@ class DeformableTransformer(nn.Module):
                 if self.mask_img:
                     loss_list['img_fg_loss'] = img_fg_loss
                     loss_list['img_bg_loss'] = img_bg_loss
-                return bev_embed, loss_list
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
             else:
                 if self.mask_pts:
                     loss_list['pts_loss'] = pts_loss
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return bev_embed, loss_list
-        return bev_embed, False
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
+        return self.conv(torch.cat([img_feat, pts_feat], dim=1)), False
 
     def forward(
         self, 

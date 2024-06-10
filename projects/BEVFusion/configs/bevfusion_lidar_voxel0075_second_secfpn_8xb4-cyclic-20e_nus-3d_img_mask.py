@@ -15,7 +15,11 @@ class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
-
+_encoder_layers_ = 3
+_num_levels_ = 1
+_num_points_in_pillar_lidar_ = 4
+_dim_=256
+_ffn_dim_ = _dim_*2
 metainfo = dict(classes=class_names)
 dataset_type = 'NuScenesDataset'
 data_root = 'data/nuscenes/'
@@ -97,8 +101,8 @@ model = dict(
         loss_weight=1,
         d_model=256,
         nheads=8,
-        num_encoder_layers=4,
-        num_img_encoder_layers=2,
+        num_encoder_layers=2,
+        num_img_encoder_layers=1,
         num_decoder_layers=0,
         dim_feedforward=1024,
         dropout=0.1,
@@ -108,10 +112,41 @@ model = dict(
         dec_n_points=4,
         enc_n_points=4,
         two_stage=False,
-        num_queries=300
+        num_queries=300,
+        bev_encoder=dict(
+            num_layers=_encoder_layers_,
+            pc_range=point_cloud_range,
+            num_points_in_pillar_lidar=_num_points_in_pillar_lidar_,
+            return_intermediate=False,
+            transformerlayers=dict(
+                type='PtsLayer',
+                attn_cfgs=[
+                    dict(
+                        type='MultiScaleDeformableAttention',
+                        embed_dims=_dim_,
+                        num_levels=1),
+                    dict(
+                        type='SpatialCrossAttentionPts',
+                        pc_range=point_cloud_range,
+                        cross_modal_feat=True,
+                        deformable_attention=dict(
+                            type='MSDeformableAttention3DPts',
+                            embed_dims=_dim_,
+                            num_points=8,
+                            num_levels=_num_levels_),
+                        embed_dims=_dim_,
+                    )
+                ],
+                ffn_cfgs=dict(
+                    type='FFN',
+                    embed_dims=_dim_,
+                ),
+                feedforward_channels=_ffn_dim_,
+                ffn_dropout=0.1,
+                operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                    'ffn', 'norm'))),
             ),
     ###
-
     bbox_head=dict(
         type='TransFusionHead',
         num_proposals=200,
