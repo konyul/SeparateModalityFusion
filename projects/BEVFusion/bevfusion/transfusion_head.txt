@@ -37,6 +37,10 @@ class DeformableTransformer(nn.Module):
         super().__init__()
         self.mask_freq = kwargs.pop("mask_freq")
         self.mask_ratio = kwargs.pop("mask_ratio")
+        
+        self.mask_img=kwargs.pop("mask_img", False)
+        self.mask_pts=kwargs.pop("mask_pts", False)
+        self.fusion_method=kwargs.get('fusion_method',False)
         self.mask_method = kwargs.get('mask_method', 'point')
         if 'patch' in self.mask_method:
             self.patch_cfg = kwargs.get('patch_cfg', None)
@@ -48,45 +52,78 @@ class DeformableTransformer(nn.Module):
             self.loss_weight = kwargs.pop("loss_weight")
         else:
             self.loss_weight = 1
-        self.model = build_deforamble_transformer(**kwargs)
-        feat_channels = 256
-        target_channels = 80
-        in_channels = [80, 256]
+        if self.mask_pts:
+            self.model = build_deforamble_transformer(**kwargs)
+        pts_channels = 256
+        img_channels = 80     
+        if self.mask_img:
+            img_kwargs = copy.deepcopy(kwargs)
+            img_kwargs['d_model'] = pts_channels
+            img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False)
+            self._model = build_deforamble_transformer(**img_kwargs)
         self.conv = nn.Sequential(nn.Conv2d(
-                sum(in_channels), feat_channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(feat_channels),
+                pts_channels+img_channels, pts_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(pts_channels),
             nn.ReLU(True))
-        self.position_embedding = PositionEmbeddingSine(
-            num_pos_feats= feat_channels // 2, normalize=True)
-        self.input_proj = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(feat_channels, feat_channels, kernel_size=1),
-                    nn.GroupNorm(32, feat_channels),
-                )])        
+        if self.mask_pts:
+            self.position_embedding = PositionEmbeddingSine(
+                num_pos_feats= pts_channels // 2, normalize=True)
+            self.input_proj = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
+                    )])        
+        if self.mask_img:
+            self._position_embedding = PositionEmbeddingSine(
+                num_pos_feats= pts_channels // 2, normalize=True)
+            self._input_proj = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(img_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
+                    )])
         self.num_cross_attention_layers = kwargs.get('num_cross_attention_layers', False)
         self._nheads = kwargs.get('_nheads', False)
-        if self.num_cross_attention_layers or self._nheads:
-            self.target_proj = nn.ModuleList([
-                    nn.Sequential(
-                        nn.Conv2d(target_channels, feat_channels, kernel_size=1),
-                        nn.GroupNorm(32, feat_channels),
-                    )]) 
-        self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, feat_channels))
-        
-        self.pred = nn.Conv2d(feat_channels, feat_channels, kernel_size=1)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+            if self.mask_pts:
+                self.target_proj = nn.ModuleList([
+                        nn.Sequential(
+                            nn.Conv2d(img_channels, pts_channels, kernel_size=1),
+                            nn.GroupNorm(32, pts_channels),
+                        )]) 
+            if self.mask_img:
+                self._target_proj = nn.ModuleList([
+                        nn.Sequential(
+                            nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                            nn.GroupNorm(32, pts_channels),
+                        )]) 
+        if self.mask_pts:
+            self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
+            self.pred = nn.Conv2d(pts_channels, pts_channels, kernel_size=1)
+        if self.mask_img:
+            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
+            self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
+            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
-            self.P_integration = ConvBNReLU(2 * feat_channels, feat_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
+            self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
         self.initialize_weights()
         
     def initialize_weights(self):
         for proj in self.input_proj:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
-        if self.num_cross_attention_layers or self._nheads:
+        for __proj in self._input_proj:
+            nn.init.xavier_uniform_(__proj[0].weight, gain=1)
+            nn.init.constant_(__proj[0].bias, 0)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
             for _proj in self.target_proj:
                 nn.init.xavier_uniform_(_proj[0].weight, gain=1)
                 nn.init.constant_(_proj[0].bias, 0)
+        if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+            for _proj_ in self._target_proj:
+                nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
+                nn.init.constant_(_proj_[0].bias, 0)
         torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -100,67 +137,13 @@ class DeformableTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
         
-    def pts_masking(self, x):
-        # code from https://github.com/facebookresearch/mae/blob/main/models_mae.py
-        _x = x.clone().detach()
-        N, L, D = x.shape  # batch, length, dim
-        len_keep = int(L * (1 - self.mask_ratio))
-        
-        noise = torch.rand(N, L, device=x.device)  # noise in [0, 1]
-        
-        # sort noise for each sample
-        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
-        ids_restore = torch.argsort(ids_shuffle, dim=1)
-
-        # keep the first subset
-        ids_keep = ids_shuffle[:, :len_keep]
-        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
-
-        # generate the binary mask: 0 is keep, 1 is remove
-        mask = torch.ones([N, L], device=x.device)
-        mask[:, :len_keep] = 0
-        # unshuffle to get the binary mask
-        mask = torch.gather(mask, dim=1, index=ids_restore)    
-        pts_mask_tokens = self.pts_mask_tokens.repeat(N, ids_restore.shape[1] + 1 - x_masked.shape[1], 1)
-        x_ = torch.cat([x_masked, pts_mask_tokens],dim=1)
-        x = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, D))  # unshuffle
-        return _x, x, mask
-    
-    def polar_pts_masking(self ,x):
-        _x = x.clone().detach()
-        BS, C, H, W = x.shape
-        cx, cy = W // 2, H // 2
-        #random_angle = int(random.choice(range(0, 181, 10)))
-        
-        
-        #mask_range = [+random_angle,-random_angle]
-
-        start_angle = int(random.choice(range(0,361,10)))
-        print(start_angle)
-        angle_range =30
-        end_angle = start_angle+angle_range 
-        Y, X = torch.meshgrid(torch.arange(H,device=x.device), torch.arange(W,device=x.device))
-
-        angles = torch.rad2deg(torch.atan2(Y-cy,X-cx))%360
-        
-        #mask = (angles >= mask_range[1]) & (angles <= mask_range[0]) # True or False
-        if start_angle+angle_range > 360:
-            mask = ((angles >= start_angle) | (angles < (end_angle%360)))
-        else:
-            mask = (angles >= start_angle) & (angles <= end_angle)
-        mask = mask.to(torch.int)
-        #mask = 1-mask
-        mask = mask.unsqueeze(0).unsqueeze(0).expand(BS, C, -1, -1) 
-        pts_mask = torch.mean(mask.float(), dim=1)
-        pts_mask = pts_mask.reshape(BS, -1)
-        
-        polar_masking = self.polar_mask_tokens.expand_as(x) 
-        x[mask==1] = polar_masking[mask==1]  
-        return _x,x,pts_mask
-    
-    def random_patch_masking(self, x):
+    def random_patch_masking(self, _x):
+        x = _x.clone()
         B, D, W, H = x.shape
-        mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
+        if D == 256:
+            mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
+        elif D == 80:
+            mask_tokens = self.img_mask_tokens.permute(2, 0, 1)
 
         mask = torch.zeros([B, W, H], device=x.device)
         for b in range(B):
@@ -177,89 +160,49 @@ class DeformableTransformer(nn.Module):
                 mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
 
         return x, mask.flatten(1)
-    
-    def grid_patch_masking(self, x):
-        B, D, W, H = x.shape
-        mask_tokens = self.pts_mask_tokens.permute(2, 0, 1)
 
-        mask = torch.zeros([B, W, H], device=x.device)
-        grid_res = self.patch_cfg.grid_res
-        grid_res_2 = W // grid_res
-        
-        for b in range(B):
-            # reshape mask to grid shap
-            grid_mask = mask[b].unfold(0, grid_res_2, grid_res_2).unfold(1, grid_res_2, grid_res_2)
-            grid_x = x[b].unfold(1, grid_res_2, grid_res_2).unfold(2, grid_res_2, grid_res_2)
-
-            # masking
-            half_grid_res = int(grid_res*grid_res*self.mask_ratio)
-            indices = torch.randperm(grid_res*grid_res)
-            mask_indices = indices[:half_grid_res]
-            rows = mask_indices // grid_res
-            cols = mask_indices % grid_res
-            grid_mask[rows, cols] = 1
-            grid_x[:, rows, cols] = mask_tokens.unsqueeze(-1).expand(D, half_grid_res, grid_res_2, grid_res_2)
-
-        return x, mask.flatten(1)
-
-    def visualize_feat(self, bev_feat, idx):
-        feat = bev_feat.cpu().detach().numpy()
-        min = feat.min()
-        max = feat.max()
-        image_features = (feat-min)/(max-min)
-        image_features = (image_features*255)
-        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
-        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
-        cv2.imwrite(f"max_image_feature_{idx}.jpg",max_image_feature)
-
-    def forward(self, inputs: List[torch.Tensor], fg_bg_mask_list) -> torch.Tensor:
+    def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
-            residual = inputs[1]
-        
+            residual_pts = inputs[1]
+            residual_img = inputs[0]
+    
         prob = np.random.uniform()
-        mask_pts = prob < self.mask_freq
+        _mask = prob < self.mask_freq
         
-        if mask_pts and inputs[1].requires_grad:
-            if self.mask_method == 'point':
-                bs, c, h, w = inputs[1].shape
-                pts_feat = inputs[1].flatten(2).transpose(1, 2)
-                pts_target, pts_feat, pts_mask = self.pts_masking(pts_feat)
-                src = pts_feat.view(bs,h,w,c).permute(0,3,1,2) # bs, c, h, w
-            elif self.mask_method == 'random_patch':
+        ## points
+        
+        if _mask and inputs[1].requires_grad and self.mask_pts:
+            if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
-            elif self.mask_method == 'grid_patch':
-                pts_target = inputs[1].flatten(2).transpose(1, 2)
-                src, pts_mask = self.grid_patch_masking(inputs[1])
-            elif self.mask_method == 'polar_patch':
-                pts_feat = inputs[1]
-                pts_target , src, pts_mask =self.polar_pts_masking(pts_feat)
         else:
             src = inputs[1]
-        s_proj = self.input_proj[0](src)
-        target = inputs[0]
-        if self.num_cross_attention_layers or self._nheads:
-            t_proj = self.target_proj[0](target)
-        else:
-            t_proj = target
-        masks = torch.zeros(
-                (s_proj.shape[0], s_proj.shape[2], s_proj.shape[3]),
-                dtype=torch.bool,
-                device=s_proj.device,
-            )
-        pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
-                s_proj.dtype)
-        inputs[1] = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
-        inputs[1] = self.pred(inputs[1])
-        if self.residual == 'sum':
-            inputs[1] += residual
-        if self.residual == 'concat':
-            inputs[1] = self.P_integration(torch.cat((inputs[1], residual), dim=1))
-        if mask_pts and inputs[1].requires_grad:
+        
+        if self.mask_pts:
+            s_proj = self.input_proj[0](src)
+            target = inputs[0]
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                t_proj = self.target_proj[0](target)
+            else:
+                t_proj = target
+            masks = torch.zeros(
+                    (s_proj.shape[0], s_proj.shape[2], s_proj.shape[3]),
+                    dtype=torch.bool,
+                    device=s_proj.device,
+                )
+            pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
+                    s_proj.dtype)
+            inputs[1] = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
+            inputs[1] = self.pred(inputs[1])
+            inputs[1] = inputs[1].contiguous()
+            if self.residual == 'sum':
+                inputs[1] += residual_pts
+        
+        if _mask and inputs[1].requires_grad and self.mask_pts:
             pts_feat = inputs[1].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[0].device
+                device=inputs[1].device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -268,19 +211,138 @@ class DeformableTransformer(nn.Module):
                 bg_loss = 0.2 * bg_loss
                 bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
                 fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
-                fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
+                if (fg_mask.squeeze()*pts_mask).sum() == 0:
+                    fg_loss = (fg_loss * pts_mask).sum()
+                else:
+                    fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
                 bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
-                fg_loss = self.loss_weight * fg_loss
-                bg_loss = self.loss_weight * bg_loss
-                return self.conv(torch.cat(inputs, dim=1)), [fg_loss, bg_loss]
+                pts_fg_loss = self.loss_weight * fg_loss
+                pts_bg_loss = self.loss_weight * bg_loss
             else:
                 loss = (pts_feat - pts_target) ** 2
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
-                loss = self.loss_weight * loss
-                return self.conv(torch.cat(inputs, dim=1)), loss
+                pts_loss = self.loss_weight * loss
+        ## img        
+        if _mask and inputs[0].requires_grad and self.mask_img:
+            if self.mask_method == 'random_patch':
+                img_target = inputs[0].flatten(2).transpose(1, 2)
+                inputs[0] = self.linear(inputs[0])
+                _src, img_mask = self.random_patch_masking(inputs[0])
+        else:
+            _src = inputs[0]
         
+        if self.mask_img:
+            _s_proj = self._input_proj[0](_src)
+            _target = inputs[1]
+            if self.num_cross_attention_layers or self._nheads or self.fusion_method:
+                _t_proj = self._target_proj[0](_target)
+            else:
+                _t_proj = _target
+            _masks = torch.zeros(
+                    (_s_proj.shape[0], _s_proj.shape[2], _s_proj.shape[3]),
+                    dtype=torch.bool,
+                    device=_s_proj.device,
+                )
+            _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
+                    _s_proj.dtype)
+            inputs[0] = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            inputs[0] = self._pred(inputs[0])
+            inputs[0] = inputs[0].contiguous()
+            if self.residual == 'sum':
+                inputs[0] += residual_img
+        
+        if _mask and inputs[0].requires_grad and self.mask_img:
+            img_feat = inputs[0].flatten(2).transpose(1, 2)         
+            if fg_bg_mask_list is not None:
+                device=inputs[0].device
+                fg_mask, bg_mask = fg_bg_mask_list
+                fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
+                fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
+                fg_loss = (img_feat - img_target) ** 2 * fg_mask
+                bg_loss = (img_feat - img_target) ** 2 * bg_mask
+                bg_loss = 0.2 * bg_loss
+                bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                if (fg_mask.squeeze()*img_mask).sum() == 0:
+                    fg_loss = (fg_loss * img_mask).sum()
+                else:
+                    fg_loss = (fg_loss * img_mask).sum() / (fg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
+                bg_loss = (bg_loss * img_mask).sum() / (bg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
+                img_fg_loss = self.loss_weight * fg_loss
+                img_bg_loss = self.loss_weight * bg_loss
+            else:
+                loss = (img_feat - img_target) ** 2
+                loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+                loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
+                img_loss = self.loss_weight * loss
+        if _mask and inputs[0].requires_grad:
+            loss_list = dict()
+            if fg_bg_mask_list is not None:
+                if self.mask_pts:
+                    loss_list['pts_fg_loss'] = pts_fg_loss
+                    loss_list['pts_bg_loss'] = pts_bg_loss
+                if self.mask_img:
+                    loss_list['img_fg_loss'] = img_fg_loss
+                    loss_list['img_bg_loss'] = img_bg_loss
+                return self.conv(torch.cat(inputs, dim=1)), loss_list
+            else:
+                if self.mask_pts:
+                    loss_list['pts_loss'] = pts_loss
+                if self.mask_img:
+                    loss_list['img_loss'] = img_loss
+                return self.conv(torch.cat(inputs, dim=1)), loss_list
         return self.conv(torch.cat(inputs, dim=1)), False
+
+
+    def forward(
+        self, 
+        inputs: List[torch.Tensor], 
+        fg_bg_mask_list, 
+        sensor_list=None,
+        batch_input_metas=None,
+    ) -> torch.Tensor:
+        batch = len(batch_input_metas)
+        loss_list, feat_list = [], []
+        loss_flag = False
+        for b in range(batch):
+            inputs_ = [inputs[0][b].unsqueeze(0), inputs[1][b].unsqueeze(0)]
+            if fg_bg_mask_list is not None:
+                fg_bg_mask_list_ = [fg_bg_mask_list[0][b].unsqueeze(0),
+                                    fg_bg_mask_list[1][b].unsqueeze(0)]
+                sensor_list_ = [True, True]
+            else:
+                fg_bg_mask_list_ = None
+                sensor_list_ = None
+            feat, loss_l = self.forward_single(inputs_, fg_bg_mask_list_, sensor_list_)
+            feat_list.append(feat)
+            loss_list.append(loss_l)
+            if loss_l:
+                loss_flag = True
+
+        for b in range(batch):
+            if loss_list[b]:
+                if batch_input_metas[b]['smt_number'] != 2:
+                    for key in list(loss_list[b].keys()):
+                        loss_list[b][key] *= 0.
+
+        if loss_flag:
+            if batch == 2:
+                if loss_list.count(False) == 0:
+                    #  print(0)
+                    for key in list(loss_list[0].keys()):
+                        loss_list[0][key] += loss_list[1][key]
+                        loss_list[0][key] /= 2
+                else:
+                    #  print(1)
+                    idx = loss_list.index(False)
+                    loss_list.pop(idx)
+            loss_list = loss_list[0]
+        else:
+            #  print(2)
+            loss_list = False
+
+        return torch.cat(feat_list, dim=0), loss_list
 
 @MODELS.register_module()
 class ModalitySpecificDecoderMask(nn.Module):
