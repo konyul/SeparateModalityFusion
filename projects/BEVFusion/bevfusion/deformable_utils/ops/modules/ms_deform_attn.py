@@ -241,6 +241,8 @@ class CCDeformAttn(nn.Module):
         self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
         self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(336, d_model)
+        if fusion_method == 'concat_img':
+            self.value_proj = nn.Linear(d_model+256, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
 
         self._reset_parameters()

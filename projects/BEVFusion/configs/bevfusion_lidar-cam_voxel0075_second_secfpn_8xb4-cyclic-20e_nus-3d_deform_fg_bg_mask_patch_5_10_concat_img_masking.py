@@ -1,5 +1,5 @@
 _base_ = [
-    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
+    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d_img_mask.py'
 ]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 input_modality = dict(use_lidar=True, use_camera=True)
@@ -55,34 +55,7 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2),
-    fusion_layer=dict(
-        type='DeformableTransformer',
-        mask_img=True,
-        mask_pts=True,
-        # fusion_method='concat',
-        mask_freq=0.25,
-        mask_ratio=0.5,
-        mask_method='random_patch',
-        patch_cfg=dict(len_min=5, len_max=10),
-        residual='sum',
-        loss_weight=1,
-        d_model=256,
-        nheads=8,
-        _nheads=1,
-        num_encoder_layers=4,
-        num_decoder_layers=0,
-        num_img_encoder_layers=2,
-        dim_feedforward=1024,
-        dropout=0.1,
-        activation="relu",
-        return_intermediate_dec=True,
-        num_feature_levels=1,
-        dec_n_points=4,
-        enc_n_points=4,
-        two_stage=False,
-        num_queries=300
-            ))
+        downsample=2))
 
 train_pipeline = [
     dict(

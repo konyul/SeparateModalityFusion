@@ -15,10 +15,10 @@ class_names = [
     'car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier',
     'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'
 ]
-_encoder_layers_ = 3
+_encoder_layers_ = 2
 _num_levels_ = 1
 _num_points_in_pillar_lidar_ = 4
-_dim_=256
+_dim_= 256
 _ffn_dim_ = _dim_*2
 metainfo = dict(classes=class_names)
 dataset_type = 'NuScenesDataset'
@@ -99,7 +99,7 @@ model = dict(
         patch_cfg=dict(len_min=5, len_max=10),
         residual='sum',
         loss_weight=1,
-        d_model=256,
+        d_model=_dim_,
         nheads=8,
         num_encoder_layers=2,
         num_img_encoder_layers=1,
