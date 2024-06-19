@@ -128,32 +128,41 @@ class BEVFusion(Base3DDetector):
                     param.requires_grad = False
 
         if self.freeze_pts:
-            for name, param in self.named_parameters():
-                if 'pts' in name and 'pts_bbox_head' not in name and 'imgpts_neck' not in name:
+            if self.pts_voxel_encoder is not None:
+                for param in self.pts_voxel_encoder.parameters():
                     param.requires_grad = False
-                if 'pts_bbox_head.decoder.0' in name:
+            if self.pts_middle_encoder is not None:
+                for param in self.pts_middle_encoder.parameters():
                     param.requires_grad = False
-                if 'imgpts_neck.shared_conv_pts' in name:
+            if self.fusion_layer is not None:
+                for param in self.fusion_layer.parameters():
                     param.requires_grad = False
-                if 'pts_bbox_head.heatmap_head' in name and 'pts_bbox_head.heatmap_head_img' not in name:
-                    param.requires_grad = False
-                if 'pts_bbox_head.prediction_heads.0' in name:
-                    param.requires_grad = False
-                if 'pts_bbox_head.class_encoding' in name:
-                    param.requires_grad = False
-            def fix_bn(m):
-                if isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d):
-                    m.track_running_stats = False
-            self.pts_voxel_layer.apply(fix_bn)
-            self.pts_voxel_encoder.apply(fix_bn)
-            self.pts_middle_encoder.apply(fix_bn)
-            self.pts_backbone.apply(fix_bn)
-            self.pts_neck.apply(fix_bn)
-            self.pts_bbox_head.heatmap_head.apply(fix_bn)
-            self.pts_bbox_head.class_encoding.apply(fix_bn)
-            self.pts_bbox_head.decoder[0].apply(fix_bn)
-            self.pts_bbox_head.prediction_heads[0].apply(fix_bn)            
-            self.imgpts_neck.shared_conv_pts.apply(fix_bn)
+            # for name, param in self.named_parameters():
+            #     if 'pts' in name and 'pts_bbox_head' not in name and 'imgpts_neck' not in name:
+            #         param.requires_grad = False
+            #     if 'pts_bbox_head.decoder.0' in name:
+            #         param.requires_grad = False
+            #     if 'imgpts_neck.shared_conv_pts' in name:
+            #         param.requires_grad = False
+            #     if 'pts_bbox_head.heatmap_head' in name and 'pts_bbox_head.heatmap_head_img' not in name:
+            #         param.requires_grad = False
+            #     if 'pts_bbox_head.prediction_heads.0' in name:
+            #         param.requires_grad = False
+            #     if 'pts_bbox_head.class_encoding' in name:
+            #         param.requires_grad = False
+            # def fix_bn(m):
+            #     if isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d):
+            #         m.track_running_stats = False
+            # self.pts_voxel_layer.apply(fix_bn)
+            # self.pts_voxel_encoder.apply(fix_bn)
+            # self.pts_middle_encoder.apply(fix_bn)
+            # self.pts_backbone.apply(fix_bn)
+            # self.pts_neck.apply(fix_bn)
+            # self.pts_bbox_head.heatmap_head.apply(fix_bn)
+            # self.pts_bbox_head.class_encoding.apply(fix_bn)
+            # self.pts_bbox_head.decoder[0].apply(fix_bn)
+            # self.pts_bbox_head.prediction_heads[0].apply(fix_bn)            
+            # self.imgpts_neck.shared_conv_pts.apply(fix_bn)
         
         
     @property
