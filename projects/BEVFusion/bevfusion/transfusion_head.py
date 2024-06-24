@@ -52,23 +52,45 @@ class DeformableTransformer(nn.Module):
             self.loss_weight = kwargs.pop("loss_weight")
         else:
             self.loss_weight = 1
+        self._nheads = kwargs.get('_nheads', False)
+        self.mae_encoder = kwargs.pop('mae_encoder', False)
         if self.mask_pts:
-            self.model = build_deforamble_transformer(**kwargs)
+            if self.mae_encoder:
+                num_encoding_model = copy.deepcopy(kwargs['num_encoder_layers'])
+                kwargs['num_encoder_layers'] = 1
+                self.model = build_deforamble_transformer(**kwargs)
+                kwargs['num_encoder_layers'] = num_encoding_model - 1
+                kwargs.pop('_nheads',0)
+                self.encoder = build_deforamble_transformer(**kwargs)
+            else:
+                self.model = build_deforamble_transformer(**kwargs)
         pts_channels = 256
         img_channels = 80     
         if self.mask_img:
             img_kwargs = copy.deepcopy(kwargs)
             img_kwargs['d_model'] = pts_channels
             img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False)
-            self._model = build_deforamble_transformer(**img_kwargs)
+            if self.mae_encoder:
+                img_kwargs['num_encoder_layers'] = 1
+                self._model = build_deforamble_transformer(**img_kwargs)
+                img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False) - 1
+                img_kwargs.pop('_nheads',0)
+                self._encoder = build_deforamble_transformer(**img_kwargs)
+            else:
+                self._model = build_deforamble_transformer(**img_kwargs)
         self.conv = nn.Sequential(nn.Conv2d(
-                pts_channels+img_channels, pts_channels, 3, padding=1, bias=False),
+                pts_channels*2, pts_channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(pts_channels),
             nn.ReLU(True))
         if self.mask_pts:
             self.position_embedding = PositionEmbeddingSine(
                 num_pos_feats= pts_channels // 2, normalize=True)
-            self.input_proj = nn.ModuleList([
+            self.input_projv1 = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
+                    )])        
+            self.input_projv2 = nn.ModuleList([
                     nn.Sequential(
                         nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
                         nn.GroupNorm(32, pts_channels),
@@ -76,13 +98,17 @@ class DeformableTransformer(nn.Module):
         if self.mask_img:
             self._position_embedding = PositionEmbeddingSine(
                 num_pos_feats= pts_channels // 2, normalize=True)
-            self._input_proj = nn.ModuleList([
+            self._input_projv1 = nn.ModuleList([
                     nn.Sequential(
                         nn.Conv2d(img_channels, pts_channels, kernel_size=1),
                         nn.GroupNorm(32, pts_channels),
                     )])
+            self._input_projv2 = nn.ModuleList([
+                    nn.Sequential(
+                        nn.Conv2d(pts_channels, pts_channels, kernel_size=1),
+                        nn.GroupNorm(32, pts_channels),
+                    )])
         self.num_cross_attention_layers = kwargs.get('num_cross_attention_layers', False)
-        self._nheads = kwargs.get('_nheads', False)
         if self.num_cross_attention_layers or self._nheads or self.fusion_method:
             if self.mask_pts:
                 self.target_proj = nn.ModuleList([
@@ -108,10 +134,16 @@ class DeformableTransformer(nn.Module):
         self.initialize_weights()
         
     def initialize_weights(self):
-        for proj in self.input_proj:
+        for proj in self.input_projv1:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
-        for __proj in self._input_proj:
+        for __proj in self._input_projv1:
+            nn.init.xavier_uniform_(__proj[0].weight, gain=1)
+            nn.init.constant_(__proj[0].bias, 0)
+        for proj in self.input_projv2:
+            nn.init.xavier_uniform_(proj[0].weight, gain=1)
+            nn.init.constant_(proj[0].bias, 0)
+        for __proj in self._input_projv2:
             nn.init.xavier_uniform_(__proj[0].weight, gain=1)
             nn.init.constant_(__proj[0].bias, 0)
         if self.num_cross_attention_layers or self._nheads or self.fusion_method:
@@ -164,8 +196,8 @@ class DeformableTransformer(nn.Module):
     def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
-            residual_pts = inputs[1]
-            residual_img = inputs[0]
+            residual_pts = inputs[1].clone()
+            residual_img = inputs[0].clone()
     
         prob = np.random.uniform()
         _mask = prob < self.mask_freq
@@ -174,35 +206,36 @@ class DeformableTransformer(nn.Module):
         
         if _mask and inputs[0].requires_grad and self.mask_pts:
             if self.mask_method == 'random_patch':
-                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                pts_target = inputs[1].flatten(2).transpose(1, 2).clone()
                 src, pts_mask = self.random_patch_masking(inputs[1])
         else:
             src = inputs[1]
         
         if self.mask_pts:
-            s_proj = self.input_proj[0](src)
             target = inputs[0]
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 t_proj = self.target_proj[0](target)
             else:
                 t_proj = target
             masks = torch.zeros(
-                    (s_proj.shape[0], s_proj.shape[2], s_proj.shape[3]),
+                    (src.shape[0], src.shape[2], src.shape[3]),
                     dtype=torch.bool,
-                    device=s_proj.device,
+                    device=src.device,
                 )
-            pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
-                    s_proj.dtype)
-            inputs[1] = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
-            inputs[1] = self.pred(inputs[1])
-            inputs[1] = inputs[1].contiguous()
-            if self.residual == 'sum':
-                inputs[1] += residual_pts
+            pos_embeds = self.position_embedding(NestedTensor(src, masks)).to(
+                    src.dtype)
+            if self.mae_encoder:
+                src = self.input_projv1[0](src)
+                s_proj = self.encoder([src], [masks], [pos_embeds], [t_proj], query_embed=None)
+            # s_proj = self.input_projv2[0](src)
+            pts_feat = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
+            pts_feat = self.pred(pts_feat)
+            pts_feat = pts_feat.contiguous()
         
         if _mask and inputs[0].requires_grad and self.mask_pts:
-            pts_feat = inputs[1].flatten(2).transpose(1, 2)         
+            pts_feat = pts_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[1].device
+                device=pts_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -223,39 +256,41 @@ class DeformableTransformer(nn.Module):
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
+        if self.residual == 'sum':
+            pts_feat += residual_pts
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
-                img_target = inputs[0].flatten(2).transpose(1, 2)
-                inputs[0] = self.linear(inputs[0])
+                img_target = inputs[0].flatten(2).transpose(1, 2).clone()
                 _src, img_mask = self.random_patch_masking(inputs[0])
         else:
             _src = inputs[0]
         
         if self.mask_img:
-            _s_proj = self._input_proj[0](_src)
             _target = inputs[1]
             if self.num_cross_attention_layers or self._nheads or self.fusion_method:
                 _t_proj = self._target_proj[0](_target)
             else:
                 _t_proj = _target
             _masks = torch.zeros(
-                    (_s_proj.shape[0], _s_proj.shape[2], _s_proj.shape[3]),
+                    (_src.shape[0], _src.shape[2], _src.shape[3]),
                     dtype=torch.bool,
-                    device=_s_proj.device,
+                    device=_src.device,
                 )
-            _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
-                    _s_proj.dtype)
-            inputs[0] = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
-            inputs[0] = self._pred(inputs[0])
-            inputs[0] = inputs[0].contiguous()
-            if self.residual == 'sum':
-                inputs[0] += residual_img
+            _pos_embeds = self._position_embedding(NestedTensor(_src, _masks)).to(
+                    _src.dtype)
+            if self.mae_encoder:
+                _src = self._input_projv1[0](_src)
+                _s_proj = self._encoder([_src], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            # _s_proj = self._input_projv2[0](_src)
+            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            img_feat = self._pred(img_feat)
+            img_feat = img_feat.contiguous()
         
         if _mask and inputs[0].requires_grad and self.mask_img:
-            img_feat = inputs[0].flatten(2).transpose(1, 2)         
+            img_feat = img_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[0].device
+                device=img_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -276,6 +311,8 @@ class DeformableTransformer(nn.Module):
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
                 img_loss = self.loss_weight * loss
+        if self.residual == 'sum':
+            img_feat += residual_img
         if _mask and inputs[0].requires_grad:
             loss_list = dict()
             if fg_bg_mask_list is not None:
@@ -285,14 +322,14 @@ class DeformableTransformer(nn.Module):
                 if self.mask_img:
                     loss_list['img_fg_loss'] = img_fg_loss
                     loss_list['img_bg_loss'] = img_bg_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
+                return self.conv(torch.cat([_s_proj, s_proj], dim=1)), loss_list
             else:
                 if self.mask_pts:
                     loss_list['pts_loss'] = pts_loss
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
-        return self.conv(torch.cat(inputs, dim=1)), False
+                return self.conv(torch.cat([_s_proj, s_proj], dim=1)), loss_list
+        return self.conv(torch.cat([_s_proj, s_proj], dim=1)), False
 
 
     def forward(
@@ -1178,7 +1215,7 @@ class TransFusionHead(nn.Module):
         heatmap = heatmap.view(batch_size, heatmap.shape[1], -1)
 
         # top num_proposals among all classes
-        top_proposals = heatmap.view(batch_size, -1).argsort(
+        top_proposals = heatmap.reshape(batch_size, -1).argsort(
            dim=-1, descending=True)[..., :self.num_proposals]  
 
 
