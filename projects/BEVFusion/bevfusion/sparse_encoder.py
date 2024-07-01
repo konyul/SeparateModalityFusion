@@ -8,7 +8,7 @@ if IS_SPCONV2_AVAILABLE:
     from spconv.pytorch import SparseConvTensor
 else:
     from mmcv.ops import SparseConvTensor
-
+import torch.utils.checkpoint as cp
 
 @MODELS.register_module()
 class BEVFusionSparseEncoder(SparseEncoder):
@@ -53,7 +53,8 @@ class BEVFusionSparseEncoder(SparseEncoder):
                  encoder_paddings=((1, ), (1, 1, 1), (1, 1, 1), ((0, 1, 1), 1,
                                                                  1)),
                  block_type='conv_module',
-                 return_middle_feats=False):
+                 return_middle_feats=False,
+                 with_cp=False):
         super(SparseEncoder, self).__init__()
         assert block_type in ['conv_module', 'basicblock']
         self.sparse_shape = sparse_shape
@@ -66,6 +67,7 @@ class BEVFusionSparseEncoder(SparseEncoder):
         self.stage_num = len(self.encoder_channels)
         self.fp16_enabled = False
         self.return_middle_feats = return_middle_feats
+        self.with_cp = with_cp
         # Spconv init all weight on its own
 
         assert isinstance(order, tuple) and len(order) == 3
@@ -130,21 +132,28 @@ class BEVFusionSparseEncoder(SparseEncoder):
         input_sp_tensor = SparseConvTensor(voxel_features, coors,
                                            self.sparse_shape, batch_size)
         x = self.conv_input(input_sp_tensor)
+        
+        def _inner_forward(y):
+            encode_features = []
+            for encoder_layer in self.encoder_layers:
+                y = encoder_layer(y)
+                encode_features.append(y)
 
-        encode_features = []
-        for encoder_layer in self.encoder_layers:
-            x = encoder_layer(x)
-            encode_features.append(x)
+            # for detection head
+            # [200, 176, 5] -> [200, 176, 2]
+            out = self.conv_out(encode_features[-1])
+            spatial_features = out.dense()
 
-        # for detection head
-        # [200, 176, 5] -> [200, 176, 2]
-        out = self.conv_out(encode_features[-1])
-        spatial_features = out.dense()
-
-        N, C, H, W, D = spatial_features.shape
-        spatial_features = spatial_features.permute(0, 1, 4, 2, 3).contiguous()
-        spatial_features = spatial_features.view(N, C * D, H, W)
-
+            N, C, H, W, D = spatial_features.shape
+            spatial_features = spatial_features.permute(0, 1, 4, 2, 3).contiguous()
+            spatial_features = spatial_features.view(N, C * D, H, W)
+            return spatial_features, encode_features
+            
+        if self.with_cp and x.features.requires_grad:
+            spatial_features, encode_features = cp.checkpoint(_inner_forward, x)
+        else:
+            spatial_features, encode_features = _inner_forward(x)
+            
         if self.return_middle_feats:
             return spatial_features, encode_features
         else:

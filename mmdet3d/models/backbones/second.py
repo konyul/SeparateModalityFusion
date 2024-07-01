@@ -9,7 +9,7 @@ from torch import nn as nn
 
 from mmdet3d.registry import MODELS
 from mmdet3d.utils import ConfigType, OptMultiConfig
-
+import torch.utils.checkpoint as cp
 
 @MODELS.register_module()
 class SECOND(BaseModule):
@@ -33,7 +33,8 @@ class SECOND(BaseModule):
                      type='BN', eps=1e-3, momentum=0.01),
                  conv_cfg: ConfigType = dict(type='Conv2d', bias=False),
                  init_cfg: OptMultiConfig = None,
-                 pretrained: Optional[str] = None) -> None:
+                 pretrained: Optional[str] = None,
+                 with_cp = False) -> None:
         super(SECOND, self).__init__(init_cfg=init_cfg)
         assert len(layer_strides) == len(layer_nums)
         assert len(out_channels) == len(layer_nums)
@@ -69,7 +70,7 @@ class SECOND(BaseModule):
             blocks.append(block)
 
         self.blocks = nn.ModuleList(blocks)
-
+        self.with_cp = with_cp
         assert not (init_cfg and pretrained), \
             'init_cfg and pretrained cannot be setting at the same time'
         if isinstance(pretrained, str):
@@ -88,8 +89,17 @@ class SECOND(BaseModule):
         Returns:
             tuple[torch.Tensor]: Multi-scale features.
         """
-        outs = []
-        for i in range(len(self.blocks)):
-            x = self.blocks[i](x)
-            outs.append(x)
+        
+        def _inner_forward(y):
+            outs = []
+            for i in range(len(self.blocks)):
+                y = self.blocks[i](y)
+                outs.append(y)
+            return outs
+        
+        if self.with_cp and x.requires_grad:
+            outs = cp.checkpoint(_inner_forward, x)
+        else:
+            outs = _inner_forward(x)
+            
         return tuple(outs)

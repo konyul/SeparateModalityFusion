@@ -1,5 +1,5 @@
 _base_ = [
-    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d_mask.py'
+    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
 ]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 input_modality = dict(use_lidar=True, use_camera=True)
@@ -29,7 +29,7 @@ model = dict(
         drop_path_rate=0.2,
         patch_norm=True,
         out_indices=[1, 2, 3],
-        with_cp=False,
+        with_cp=True,
         convert_weights=True,
         init_cfg=dict(
             type='Pretrained',
@@ -238,5 +238,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './work_dirs/masking_strategy/version2/image_head_encoder_decoder/epoch_5.pth'
-find_unused_parameters=True
+load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_sum/epoch_5.pth'
+#find_unused_parameters=True

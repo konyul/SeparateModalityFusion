@@ -73,6 +73,7 @@ class BEVFusion(Base3DDetector):
         self.pts_neck = MODELS.build(pts_neck)
         self.imgpts_neck = MODELS.build(imgpts_neck) if imgpts_neck else None
         self.masking_encoder = MODELS.build(masking_encoder) if masking_encoder else None
+        self.head_name = bbox_head['type']
         self.bbox_head = MODELS.build(bbox_head)
         self.freeze_img = freeze_img
         self.freeze_pts = freeze_pts
@@ -292,10 +293,13 @@ class BEVFusion(Base3DDetector):
                 **kwargs) -> List[Det3DDataSample]:
         
         batch_input_metas = [item.metainfo for item in batch_data_samples]
-        feats, _, _= self.extract_feat(batch_inputs_dict, batch_input_metas)
+        feats, _, _, cm_feat = self.extract_feat(batch_inputs_dict, batch_input_metas)
 
         if self.with_bbox_head:
-            outputs = self.bbox_head.predict(feats, batch_input_metas)
+            if self.head_name == "RobustHead":
+                outputs = self.bbox_head.predict(feats, cm_feat, batch_input_metas)
+            else:
+                outputs = self.bbox_head.predict(feats, batch_input_metas)
 
         res = self.add_pred_to_datasample(batch_data_samples, outputs)
 
@@ -355,8 +359,7 @@ class BEVFusion(Base3DDetector):
 
         x = self.pts_backbone(x)
         x = self.pts_neck(x)
-
-        return x, mask_loss, pts_loss
+        return x, mask_loss, pts_loss, [img_feature, pts_feature]
 
     def fg_bg_mask(self, batch_data_samples):
             
@@ -419,10 +422,13 @@ class BEVFusion(Base3DDetector):
             sensor_list = batch_inputs_dict['sensor_list']
         else:
             sensor_list = None
-        feats, mask_loss, pts_loss = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list, sensor_list)
+        feats, mask_loss, pts_loss, cm_feat = self.extract_feat(batch_inputs_dict, batch_input_metas, fg_bg_mask_list, sensor_list)
         losses = dict()
         if self.with_bbox_head:
-            bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
+            if self.head_name == 'RobustHead':
+                bbox_loss = self.bbox_head.loss(feats, cm_feat, batch_data_samples)
+            else:
+                bbox_loss = self.bbox_head.loss(feats, batch_data_samples)
         if pts_loss:
             if isinstance(pts_loss,dict):
                 losses.update(pts_loss) 

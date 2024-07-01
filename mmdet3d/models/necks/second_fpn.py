@@ -6,7 +6,7 @@ from mmengine.model import BaseModule
 from torch import nn as nn
 
 from mmdet3d.registry import MODELS
-
+import torch.utils.checkpoint as cp
 
 @MODELS.register_module()
 class SECONDFPN(BaseModule):
@@ -31,7 +31,8 @@ class SECONDFPN(BaseModule):
                  upsample_cfg=dict(type='deconv', bias=False),
                  conv_cfg=dict(type='Conv2d', bias=False),
                  use_conv_for_no_stride=False,
-                 init_cfg=None):
+                 init_cfg=None,
+                 with_cp=False):
         # if for GroupNorm,
         # cfg is dict(type='GN', num_groups=num_groups, eps=1e-3, affine=True)
         super(SECONDFPN, self).__init__(init_cfg=init_cfg)
@@ -63,7 +64,7 @@ class SECONDFPN(BaseModule):
                                     nn.ReLU(inplace=True))
             deblocks.append(deblock)
         self.deblocks = nn.ModuleList(deblocks)
-
+        self.with_cp = with_cp
         if init_cfg is None:
             self.init_cfg = [
                 dict(type='Kaiming', layer='ConvTranspose2d'),
@@ -80,11 +81,22 @@ class SECONDFPN(BaseModule):
         Returns:
             list[torch.Tensor]: Multi-level feature maps.
         """
-        assert len(x) == len(self.in_channels)
-        ups = [deblock(x[i]) for i, deblock in enumerate(self.deblocks)]
+        
+        def _inner_forward(y):
+            assert len(y) == len(self.in_channels)
+            ups = [deblock(y[i]) for i, deblock in enumerate(self.deblocks)]
 
-        if len(ups) > 1:
-            out = torch.cat(ups, dim=1)
+            if len(ups) > 1:
+                out = torch.cat(ups, dim=1)
+            else:
+                out = ups[0]
+            return out
+            
+        
+        if self.with_cp and x[0].requires_grad:
+            out = cp.checkpoint(_inner_forward, x)
         else:
-            out = ups[0]
+            out = _inner_forward(x)
+        
+        
         return [out]
