@@ -89,17 +89,11 @@ class SECOND(BaseModule):
         Returns:
             tuple[torch.Tensor]: Multi-scale features.
         """
-        
-        def _inner_forward(y):
-            outs = []
-            for i in range(len(self.blocks)):
-                y = self.blocks[i](y)
-                outs.append(y)
-            return outs
-        
-        if self.with_cp and x.requires_grad:
-            outs = cp.checkpoint(_inner_forward, x)
-        else:
-            outs = _inner_forward(x)
-            
+        outs = []
+        for i in range(len(self.blocks)):
+            if self.with_cp:
+                x = cp.checkpoint(self.blocks[i], x)
+            else:
+                x = self.blocks[i](x)
+            outs.append(x)
         return tuple(outs)

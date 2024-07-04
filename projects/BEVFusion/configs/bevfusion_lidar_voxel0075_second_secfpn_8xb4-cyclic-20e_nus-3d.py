@@ -67,7 +67,7 @@ model = dict(
                                                                       128)),
         encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, (1, 1, 0)), (0, 0)),
         block_type='basicblock',
-        with_cp=True),
+        with_cp=False),
     pts_backbone=dict(
         type='SECOND',
         in_channels=256,

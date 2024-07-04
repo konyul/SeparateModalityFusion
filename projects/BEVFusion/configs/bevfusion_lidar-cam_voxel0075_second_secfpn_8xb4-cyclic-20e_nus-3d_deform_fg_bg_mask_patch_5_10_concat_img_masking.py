@@ -237,4 +237,4 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 load_from = './pretrained/convert_weight.pth'
-find_unused_parameters=True
+# find_unused_parameters=True

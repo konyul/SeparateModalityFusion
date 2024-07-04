@@ -103,7 +103,6 @@ class DeformableTransformer(nn.Module):
         if self.mask_img:
             self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
             self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
-            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
         self.initialize_weights()
@@ -138,7 +137,7 @@ class DeformableTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
         
-    def random_patch_masking(self, _x):
+    def random_patch_masking(self, _x, with_cp=False):
         x = _x.clone()
         B, D, W, H = x.shape
         if D == 256:
@@ -156,9 +155,13 @@ class DeformableTransformer(nn.Module):
 
             # masking patch
             rand_x_l, rand_y_l = torch.randint(0, W, (rand_n, 1)), torch.randint(0, H, (rand_n, 1))
-            for rand_s, rand_x, rand_y in zip(rand_s_l, rand_x_l, rand_y_l):
-                x[b][:, rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = mask_tokens
-                mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
+            if with_cp==True:
+                x[b][:, 0:1, 0:1] = mask_tokens
+                mask[b][0:1, 0:1] = 1
+            else:
+                for rand_s, rand_x, rand_y in zip(rand_s_l, rand_x_l, rand_y_l):
+                    x[b][:, rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = mask_tokens
+                    mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
 
         return x, mask.flatten(1)
 
@@ -177,6 +180,10 @@ class DeformableTransformer(nn.Module):
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
+        elif not _mask and inputs[0].requires_grad and self.mask_pts:
+            if self.mask_method == 'random_patch':
+                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
         else:
             src = inputs[1]
         
@@ -228,8 +235,11 @@ class DeformableTransformer(nn.Module):
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
-                inputs[0] = self.linear(inputs[0])
                 _src, img_mask = self.random_patch_masking(inputs[0])
+        elif not _mask and inputs[0].requires_grad and self.mask_img:
+            if self.mask_method == 'random_patch':
+                img_target = inputs[0].flatten(2).transpose(1, 2)
+                _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
         else:
             _src = inputs[0]
         

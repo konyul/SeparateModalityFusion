@@ -82,21 +82,19 @@ class SECONDFPN(BaseModule):
             list[torch.Tensor]: Multi-level feature maps.
         """
         
-        def _inner_forward(y):
-            assert len(y) == len(self.in_channels)
-            ups = [deblock(y[i]) for i, deblock in enumerate(self.deblocks)]
-
-            if len(ups) > 1:
-                out = torch.cat(ups, dim=1)
+        assert len(x) == len(self.in_channels)
+        # ups = [deblock(x[i]) for i, deblock in enumerate(self.deblocks)]
+        ups = []
+        for i, deblock in enumerate(self.deblocks):
+            if self.with_cp:
+                result = cp.checkpoint(deblock, x[i])
             else:
-                out = ups[0]
-            return out
-            
-        
-        if self.with_cp and x[0].requires_grad:
-            out = cp.checkpoint(_inner_forward, x)
+                result = deblock(x[i])
+            ups.append(result)
+
+        if len(ups) > 1:
+            out = torch.cat(ups, dim=1)
         else:
-            out = _inner_forward(x)
-        
-        
+            out = ups[0]
         return [out]
+
