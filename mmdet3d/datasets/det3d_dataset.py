@@ -199,19 +199,19 @@ class Det3DDataset(BaseDataset):
         return ann_info
 
     def parse_ann_info(self, info: dict) -> Union[dict, None]:
-        """Process the `instances` in data info to `ann_info`.
+        # """Process the `instances` in data info to `ann_info`.
 
-        In `Custom3DDataset`, we simply concatenate all the field
-        in `instances` to `np.ndarray`, you can do the specific
-        process in subclass. You have to convert `gt_bboxes_3d`
-        to different coordinates according to the task.
+        # In `Custom3DDataset`, we simply concatenate all the field
+        # in `instances` to `np.ndarray`, you can do the specific
+        # process in subclass. You have to convert `gt_bboxes_3d`
+        # to different coordinates according to the task.
 
-        Args:
-            info (dict): Info dict.
+        # Args:
+        #     info (dict): Info dict.
 
-        Returns:
-            dict or None: Processed `ann_info`.
-        """
+        # Returns:
+        #     dict or None: Processed `ann_info`.
+        # """
         # add s or gt prefix for most keys after concat
         # we only process 3d annotations here, the corresponding
         # 2d annotation process is in the `LoadAnnotations3D`
@@ -263,19 +263,19 @@ class Det3DDataset(BaseDataset):
         return ann_info
 
     def parse_data_info(self, info: dict) -> dict:
-        """Process the raw data info.
+        # """Process the raw data info.
 
-        Convert all relative path of needed modality data file to
-        the absolute path. And process the `instances` field to
-        `ann_info` in training stage.
+        # Convert all relative path of needed modality data file to
+        # the absolute path. And process the `instances` field to
+        # `ann_info` in training stage.
 
-        Args:
-            info (dict): Raw info dict.
+        # Args:
+        #     info (dict): Raw info dict.
 
-        Returns:
-            dict: Has `ann_info` in training stage. And
-            all path has been converted to absolute path.
-        """
+        # Returns:
+        #     dict: Has `ann_info` in training stage. And
+        #     all path has been converted to absolute path.
+        # """
 
         if self.modality['use_lidar']:
             info['lidar_points']['lidar_path'] = \
@@ -364,7 +364,7 @@ class Det3DDataset(BaseDataset):
             info['ann_info'] = self.parse_ann_info(info)
         if self.test_mode and self.load_eval_anns:
             info['eval_ann_info'] = self.parse_ann_info(info)
-
+        info['test_mode'] = self.test_mode
         return info
 
     def _show_ins_var(self, old_labels: np.ndarray,

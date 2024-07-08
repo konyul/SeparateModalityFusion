@@ -6,7 +6,7 @@ from torch import nn
 
 from mmdet3d.registry import MODELS
 from .ops import bev_pool
-
+import torch.utils.checkpoint as cp
 
 def gen_dx_bx(xbound, ybound, zbound):
     dx = torch.Tensor([row[2] for row in [xbound, ybound, zbound]])
@@ -345,6 +345,7 @@ class DepthLSSTransform(BaseDepthTransform):
         zbound: Tuple[float, float, float],
         dbound: Tuple[float, float, float],
         downsample: int = 1,
+        with_cp=False
     ) -> None:
         """Compared with `LSSTransform`, `DepthLSSTransform` adds sparse depth
         information from lidar points into the inputs of the `depthnet`."""
@@ -402,6 +403,7 @@ class DepthLSSTransform(BaseDepthTransform):
             )
         else:
             self.downsample = nn.Identity()
+        self.with_cp = with_cp
 
     def get_cam_feats(self, x, d):
         B, N, C, fH, fW = x.shape
@@ -409,9 +411,15 @@ class DepthLSSTransform(BaseDepthTransform):
         d = d.view(B * N, *d.shape[2:])
         x = x.view(B * N, C, fH, fW)
 
-        d = self.dtransform(d)
+        if self.with_cp:
+            d = cp.checkpoint(self.dtransform, d)
+        else:
+            d = self.dtransform(d)
         x = torch.cat([d, x], dim=1)
-        x = self.depthnet(x)
+        if self.with_cp:
+            x = cp.checkpoint(self.depthnet, x)
+        else:
+            x = self.depthnet(x)
 
         depth = x[:, :self.D].softmax(dim=1)
         x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
@@ -422,5 +430,8 @@ class DepthLSSTransform(BaseDepthTransform):
 
     def forward(self, *args, **kwargs):
         x = super().forward(*args, **kwargs)
-        x = self.downsample(x)
+        if self.with_cp:
+            x = cp.checkpoint(self.downsample, x)
+        else:
+            x = self.downsample(x)
         return x

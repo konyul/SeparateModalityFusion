@@ -42,6 +42,8 @@ input_modality = dict(use_lidar=True, use_camera=False)
 #         's3://openmmlab/datasets/detection3d/nuscenes/'
 #     }))
 backend_args = None
+hybrid_query = False
+multi_value = 'max'
 model = dict(
     type='BEVFusion',
     data_preprocessor=dict(
@@ -114,8 +116,10 @@ model = dict(
             ),
     
     bbox_head=dict(
-        type='TransFusionHead',
+        type='RobustHead',
         num_proposals=200,
+        hybrid_query=hybrid_query,
+        multi_value=multi_value,
         auxiliary=True,
         in_channels=512,
         hidden_channel=128,
@@ -124,7 +128,7 @@ model = dict(
         bn_momentum=0.1,
         num_decoder_layers=1,
         decoder_layer=dict(
-            type='TransformerDecoderLayer',
+            type='CMTransformerDecoderLayer',
             self_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             cross_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
@@ -136,6 +140,8 @@ model = dict(
             ),
             norm_cfg=dict(type='LN'),
             pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
+            hybrid_query=hybrid_query,
+            multi_value=multi_value,
             with_cp=True),
         train_cfg=dict(
             dataset='nuScenes',
@@ -184,8 +190,7 @@ model = dict(
         loss_heatmap=dict(
             type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1.0),
         loss_bbox=dict(
-            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
-        with_cp=True))
+            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25)))
 
 db_sampler = dict(
     data_root=data_root,

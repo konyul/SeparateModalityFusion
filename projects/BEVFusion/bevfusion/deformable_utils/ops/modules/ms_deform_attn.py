@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import MSDeformAttnFunction
-
+import torch.utils.checkpoint as cp
 
 def _is_power_of_2(n):
     if (not isinstance(n, int)) or (n < 0):
@@ -117,7 +117,7 @@ class MSDeformAttn(nn.Module):
 
 
 class CMDeformAttn(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, _nheads=0):
+    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, _nheads=0, with_cp=False):
         """
         Multi-Scale Deformable Attention Module
         :param d_model      hidden dimension
@@ -146,7 +146,7 @@ class CMDeformAttn(nn.Module):
         self.value_proj = nn.Linear(d_model, d_model)
         self._value_proj = nn.Linear(d_model, self._dmodel)
         self.output_proj = nn.Linear(d_model + self._dmodel, d_model)
-
+        self.with_cp = with_cp
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -182,6 +182,10 @@ class CMDeformAttn(nn.Module):
         N, Len_q, _ = query.shape
         N, Len_in, _ = input_flatten[0].shape
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
+        # if self.with_cp:
+        #     value1 = cp.checkpoint(self.value_proj, input_flatten[0])
+        #     value2 = cp.checkpoint(self._value_proj, input_flatten[1])
+        # else:
         value1 = self.value_proj(input_flatten[0])
         value2 = self._value_proj(input_flatten[1])
         if input_padding_mask is not None:
@@ -189,6 +193,10 @@ class CMDeformAttn(nn.Module):
             value2 = value2.masked_fill(input_padding_mask[..., None], float(0))
         value1 = value1.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
         value2 = value2.view(N, Len_in, self._nheads, self._dmodel // self._nheads)
+        # if self.with_cp:
+        #     sampling_offsets = cp.checkpoint(self.sampling_offsets, query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels, self.n_points, 2)
+        #     attention_weights = cp.checkpoint(self.attention_weights, query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels * self.n_points)
+        # else:
         sampling_offsets = self.sampling_offsets(query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels, self.n_points, 2)
         attention_weights = self.attention_weights(query).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels * self.n_points)
         attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, (self.n_heads + self._nheads), self.n_levels, self.n_points)
@@ -206,10 +214,18 @@ class CMDeformAttn(nn.Module):
                 'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
         sampling_locations1, sampling_locations2 = sampling_locations[:,:,:8].contiguous(), sampling_locations[:,:,8:].contiguous()
         attention_weights1, attention_weights2 = attention_weights[:,:,:8].contiguous(), attention_weights[:,:,8:].contiguous()
+        # if self.with_cp:
+        #     output1 = cp.checkpoint(MSDeformAttnFunction.apply, value1, input_spatial_shapes, input_level_start_index, sampling_locations1, attention_weights1, self.im2col_step)
+        #     output2 = cp.checkpoint(MSDeformAttnFunction.apply, value2, input_spatial_shapes, input_level_start_index, sampling_locations2, attention_weights2, self.im2col_step)
+        # else:
         output1 = MSDeformAttnFunction.apply(value1, input_spatial_shapes, input_level_start_index, sampling_locations1, attention_weights1, self.im2col_step)
         output2 = MSDeformAttnFunction.apply(value2, input_spatial_shapes, input_level_start_index, sampling_locations2, attention_weights2, self.im2col_step)
         output = torch.cat((output1, output2),-1)
+        # if self.with_cp:
+        #     output = cp.checkpoint(self.output_proj, output)
+        # else:
         output = self.output_proj(output)
+            
         return output
 
 

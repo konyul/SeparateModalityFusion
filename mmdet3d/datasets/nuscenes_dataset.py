@@ -194,18 +194,18 @@ class NuScenesDataset(Det3DDataset):
         return filtered_annotations
 
     def parse_ann_info(self, info: dict) -> dict:
-        """Process the `instances` in data info to `ann_info`.
+        # """Process the `instances` in data info to `ann_info`.
 
-        Args:
-            info (dict): Data information of single data sample.
+        # Args:
+        #     info (dict): Data information of single data sample.
 
-        Returns:
-            dict: Annotation information consists of the following keys:
+        # Returns:
+        #     dict: Annotation information consists of the following keys:
 
-                - gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`):
-                  3D ground truth bboxes.
-                - gt_labels_3d (np.ndarray): Labels of ground truths.
-        """
+        #         - gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`):
+        #           3D ground truth bboxes.
+        #         - gt_labels_3d (np.ndarray): Labels of ground truths.
+        # """
         ann_info = super().parse_ann_info(info)
         if ann_info is not None:
 
@@ -254,18 +254,18 @@ class NuScenesDataset(Det3DDataset):
         return ann_info
 
     def parse_data_info(self, info: dict) -> Union[List[dict], dict]:
-        """Process the raw data info.
+        # """Process the raw data info.
 
-        The only difference with it in `Det3DDataset`
-        is the specific process for `plane`.
+        # The only difference with it in `Det3DDataset`
+        # is the specific process for `plane`.
 
-        Args:
-            info (dict): Raw info dict.
+        # Args:
+        #     info (dict): Raw info dict.
 
-        Returns:
-            List[dict] or dict: Has `ann_info` in training stage. And
-            all path has been converted to absolute path.
-        """
+        # Returns:
+        #     List[dict] or dict: Has `ann_info` in training stage. And
+        #     all path has been converted to absolute path.
+        # """
         if self.load_type == 'mv_image_based':
             data_list = []
             if self.modality['use_lidar']:

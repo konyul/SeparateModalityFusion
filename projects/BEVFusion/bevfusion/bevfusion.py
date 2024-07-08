@@ -291,7 +291,6 @@ class BEVFusion(Base3DDetector):
     def predict(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
                 batch_data_samples: List[Det3DDataSample],
                 **kwargs) -> List[Det3DDataSample]:
-        
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         feats, _, _, cm_feat = self.extract_feat(batch_inputs_dict, batch_input_metas)
 

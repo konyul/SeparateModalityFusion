@@ -26,6 +26,7 @@ from .deformable_transformer import build_deforamble_transformer
 from .deformable_utils.position_encoding import PositionEmbeddingSine
 from .utils import NestedTensor
 import cv2
+import torch.utils.checkpoint as cp
 def clip_sigmoid(x, eps=1e-4):
     y = torch.clamp(x.sigmoid_(), min=eps, max=1 - eps)
     return y
@@ -38,7 +39,7 @@ class DeformableTransformer(nn.Module):
         super().__init__()
         self.mask_freq = kwargs.pop("mask_freq")
         self.mask_ratio = kwargs.pop("mask_ratio")
-        
+        self.with_cp = kwargs.pop("with_cp")
         self.mask_img=kwargs.pop("mask_img", False)
         self.mask_pts=kwargs.pop("mask_pts", False)
         self.fusion_method=kwargs.get('fusion_method',False)
@@ -54,6 +55,7 @@ class DeformableTransformer(nn.Module):
         else:
             self.loss_weight = 1
         if self.mask_pts:
+            kwargs['with_cp'] = self.with_cp
             self.model = build_deforamble_transformer(**kwargs)
         pts_channels = 256
         img_channels = 80     
@@ -61,6 +63,7 @@ class DeformableTransformer(nn.Module):
             img_kwargs = copy.deepcopy(kwargs)
             img_kwargs['d_model'] = pts_channels
             img_kwargs['num_encoder_layers'] = kwargs.get('num_img_encoder_layers',False)
+            img_kwargs['with_cp'] = self.with_cp
             self._model = build_deforamble_transformer(**img_kwargs)
         self.conv = nn.Sequential(nn.Conv2d(
                 pts_channels+img_channels, pts_channels, 3, padding=1, bias=False),
@@ -164,23 +167,33 @@ class DeformableTransformer(nn.Module):
                     mask[b][rand_x:rand_x+rand_s, rand_y:rand_y+rand_s] = 1
 
         return x, mask.flatten(1)
-
-    def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, sensor_list=None) -> torch.Tensor:
+    
+    def visualize_feat(self, bev_feat, idx):
+        feat = bev_feat.cpu().detach().numpy()
+        min = feat.min()
+        max = feat.max()
+        image_features = (feat-min)/(max-min)
+        image_features = (image_features*255)
+        max_image_feature = np.max(np.transpose(image_features.astype("uint8"),(1,2,0)),axis=2)
+        max_image_feature = cv2.applyColorMap(max_image_feature,cv2.COLORMAP_JET)
+        cv2.imwrite(f"max_{idx}.jpg",max_image_feature)
+        
+    def forward_single(self, inputs: List[torch.Tensor], fg_bg_mask_list, test_mode, sensor_list=None) -> torch.Tensor:
         # image feature, points feature
         if self.residual:
             residual_pts = inputs[1]
             residual_img = inputs[0]
-    
+        is_training = not test_mode
         prob = np.random.uniform()
         _mask = prob < self.mask_freq
         
         ## points
         
-        if _mask and inputs[0].requires_grad and self.mask_pts:
+        if _mask and is_training and self.mask_pts:
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
-        elif not _mask and inputs[0].requires_grad and self.mask_pts:
+        elif not _mask and is_training and self.mask_pts:
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
@@ -207,7 +220,7 @@ class DeformableTransformer(nn.Module):
             if self.residual == 'sum':
                 inputs[1] += residual_pts
         
-        if _mask and inputs[0].requires_grad and self.mask_pts:
+        if _mask and is_training and self.mask_pts:
             pts_feat = inputs[1].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
                 device=inputs[1].device
@@ -232,11 +245,11 @@ class DeformableTransformer(nn.Module):
                 loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
                 pts_loss = self.loss_weight * loss
         ## img        
-        if _mask and inputs[0].requires_grad and self.mask_img:
+        if _mask and is_training and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
                 _src, img_mask = self.random_patch_masking(inputs[0])
-        elif not _mask and inputs[0].requires_grad and self.mask_img:
+        elif not _mask and is_training and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
                 _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
@@ -263,7 +276,7 @@ class DeformableTransformer(nn.Module):
             if self.residual == 'sum':
                 inputs[0] += residual_img
         
-        if _mask and inputs[0].requires_grad and self.mask_img:
+        if _mask and is_training and self.mask_img:
             img_feat = inputs[0].flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
                 device=inputs[0].device
@@ -287,7 +300,7 @@ class DeformableTransformer(nn.Module):
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
                 loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
                 img_loss = self.loss_weight * loss
-        if _mask and inputs[0].requires_grad:
+        if _mask and is_training:
             loss_list = dict()
             if fg_bg_mask_list is not None:
                 if self.mask_pts:
@@ -314,6 +327,7 @@ class DeformableTransformer(nn.Module):
         batch_input_metas=None,
     ) -> torch.Tensor:
         batch = len(batch_input_metas)
+        test_mode = 'test_mode' in batch_input_metas[0]
         loss_list, feat_list = [], []
         loss_flag = False
         for b in range(batch):
@@ -325,7 +339,7 @@ class DeformableTransformer(nn.Module):
             else:
                 fg_bg_mask_list_ = None
                 sensor_list_ = None
-            feat, loss_l = self.forward_single(inputs_, fg_bg_mask_list_, sensor_list_)
+            feat, loss_l = self.forward_single(inputs_, fg_bg_mask_list_, test_mode, sensor_list_)
             feat_list.append(feat)
             loss_list.append(loss_l)
             if loss_l:
@@ -1012,6 +1026,7 @@ class TransFusionHead(nn.Module):
         train_cfg=None,
         test_cfg=None,
         bbox_coder=None,
+        with_cp=False
     ):
         super(TransFusionHead, self).__init__()
         self.num_classes = num_classes
@@ -1089,6 +1104,7 @@ class TransFusionHead(nn.Module):
 
         self.init_weights()
         self._init_assigner_sampler()
+        self.with_cp = with_cp
 
         # Position Embedding for Cross-Attention, which is re-used during training # noqa: E501
         x_size = self.test_cfg['grid_size'][0] // self.test_cfg[
@@ -1847,6 +1863,7 @@ class RobustHead(TransFusionHead):
         train_cfg=None,
         test_cfg=None,
         bbox_coder=None,
+        with_cp=False,
     ):
         super(RobustHead, self).__init__(num_proposals, auxiliary, in_channels, hidden_channel, num_classes, num_decoder_layers, decoder_layer,
                                          num_heads, nms_kernel_size, bn_momentum, common_heads, num_heatmap_convs, conv_cfg, norm_cfg,
@@ -1870,6 +1887,7 @@ class RobustHead(TransFusionHead):
         self.hybrid_query = hybrid_query
         self.multi_value = multi_value
         self.query_labels_list = []
+        self.with_cp = with_cp
         
     def query_init(self, input_feature, modality):
         batch_size = input_feature.shape[0]

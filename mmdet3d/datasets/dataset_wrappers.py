@@ -62,14 +62,14 @@ class CBGSDataset:
         self._fully_initialized = True
 
     def _get_sample_indices(self, dataset: BaseDataset) -> List[int]:
-        """Load sample indices according to ann_file.
+        # """Load sample indices according to ann_file.
 
-        Args:
-            dataset (:obj:`BaseDataset`): The dataset.
+        # Args:
+        #     dataset (:obj:`BaseDataset`): The dataset.
 
-        Returns:
-            List[dict]: List of indices after class sampling.
-        """
+        # Returns:
+        #     List[dict]: List of indices after class sampling.
+        # """
         classes = self.metainfo['classes']
         cat2id = {name: i for i, name in enumerate(classes)}
         class_sample_idxs = {cat_id: [] for cat_id in cat2id.values()}

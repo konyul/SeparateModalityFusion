@@ -18,14 +18,14 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from .util.misc import inverse_sigmoid
 from .deformable_utils.ops.modules import MSDeformAttn, CMDeformAttn, CCDeformAttn
-
+import torch.utils.checkpoint as cp
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8, _nheads=0, fusion_method=False,
                  num_encoder_layers=6, num_cross_attention_layers=0, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
-                 two_stage=False, two_stage_num_proposals=300,
+                 two_stage=False, two_stage_num_proposals=300, with_cp=False,
                  **kwargs):
         super().__init__()
         self.d_model = d_model
@@ -36,7 +36,7 @@ class DeformableTransformer(nn.Module):
 
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, _nheads, fusion_method)
+                                                          num_feature_levels, nhead, enc_n_points, _nheads, fusion_method, with_cp)
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
         self.num_decoder_layers = num_decoder_layers
         if self.num_decoder_layers !=0:
@@ -62,7 +62,7 @@ class DeformableTransformer(nn.Module):
         else:
             if self.num_decoder_layers !=0:
                 self.reference_points = nn.Linear(d_model, 2)
-
+        self.with_cp = with_cp
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -161,7 +161,7 @@ class DeformableTransformer(nn.Module):
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
-
+            
         # encoder
         if self._nheads != 0 or self.fusion_method:
             memory = self.encoder([src_flatten, target_flatten], spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
@@ -209,14 +209,14 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4, _nheads=0, fusion_method=False):
+                 n_levels=4, n_heads=8, n_points=4, _nheads=0, fusion_method=False, with_cp=False):
         super().__init__()
 
         # self attention
         self._nheads = _nheads
         self.fusion_method = fusion_method
         if self._nheads != 0:
-            self.self_attn = CMDeformAttn(d_model, n_levels, n_heads, n_points, _nheads)
+            self.self_attn = CMDeformAttn(d_model, n_levels, n_heads, n_points, _nheads, with_cp)
         elif self.fusion_method:
             self.self_attn = CCDeformAttn(d_model, n_levels, n_heads, n_points, fusion_method)
         else:    
@@ -436,7 +436,8 @@ def build_deforamble_transformer(**kwargs):
         dec_n_points=kwargs['dec_n_points'],
         enc_n_points=kwargs['enc_n_points'],
         two_stage=kwargs['two_stage'],
-        two_stage_num_proposals=kwargs['num_queries']
+        two_stage_num_proposals=kwargs['num_queries'],
+        with_cp=kwargs['with_cp']
         )
 
 

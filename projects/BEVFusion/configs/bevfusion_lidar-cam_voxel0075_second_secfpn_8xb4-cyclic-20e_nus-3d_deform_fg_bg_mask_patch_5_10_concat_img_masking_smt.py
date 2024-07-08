@@ -7,8 +7,8 @@ backend_args = None
 
 model = dict(
     type='BEVFusion',
-    #freeze_img=True,
-    freeze_pts=True,
+    freeze_img=False,
+    freeze_pts=False,
     sep_fg=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
@@ -45,7 +45,8 @@ model = dict(
         num_outs=3,
         norm_cfg=dict(type='BN2d', requires_grad=True),
         act_cfg=dict(type='ReLU', inplace=True),
-        upsample_cfg=dict(mode='bilinear', align_corners=False)),
+        upsample_cfg=dict(mode='bilinear', align_corners=False),
+        with_cp=True),
     view_transform=dict(
         type='DepthLSSTransform',
         in_channels=256,
@@ -56,7 +57,8 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2))
+        downsample=2,
+        with_cp=True))
 
 train_pipeline = [
     dict(
@@ -130,7 +132,7 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats','smt_number'
+            'lidar_aug_matrix', 'num_pts_feats', 'smt_number', 'test_mode'
         ])
 ]
 
@@ -171,7 +173,7 @@ test_pipeline = [
         meta_keys=[
             'cam2img', 'ori_cam2img', 'lidar2cam', 'lidar2img', 'cam2lidar',
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
-            'lidar_path', 'img_path', 'num_pts_feats'
+            'lidar_path', 'img_path', 'num_pts_feats', 'test_mode'
         ])
 ]
 
@@ -238,5 +240,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_sum/epoch_5.pth'
+load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_max/epoch_5.pth'
 #find_unused_parameters=True

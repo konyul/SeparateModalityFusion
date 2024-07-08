@@ -251,7 +251,6 @@ class Pack3DDetInputs(BaseTransform):
         packed_results = dict()
         packed_results['data_samples'] = data_sample
         packed_results['inputs'] = inputs
-
         return packed_results
 
     def __repr__(self) -> str:
