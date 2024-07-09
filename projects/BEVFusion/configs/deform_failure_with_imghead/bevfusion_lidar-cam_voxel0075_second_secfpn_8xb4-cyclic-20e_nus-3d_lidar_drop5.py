@@ -1,14 +1,14 @@
 _base_ = [
-    './bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
+    '../bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py'
 ]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 input_modality = dict(use_lidar=True, use_camera=True)
 backend_args = None
-
+lidar_drop = True
+hybrid_query = True
+multi_value = False
 model = dict(
     type='BEVFusion',
-    freeze_img=True,
-    sep_fg=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
@@ -55,7 +55,82 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2))
+        downsample=2),
+    bbox_head=dict(
+        type='RobustHead',
+        num_proposals=400,
+        hybrid_query=hybrid_query,
+        multi_value=multi_value,
+        auxiliary=True,
+        in_channels=512,
+        hidden_channel=128,
+        num_classes=10,
+        nms_kernel_size=3,
+        bn_momentum=0.1,
+        num_decoder_layers=1,
+        decoder_layer=dict(
+            type='CMTransformerDecoderLayer',
+            self_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
+            cross_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
+            ffn_cfg=dict(
+                embed_dims=128,
+                feedforward_channels=256,
+                num_fcs=2,
+                ffn_drop=0.1,
+                act_cfg=dict(type='ReLU', inplace=True),
+            ),
+            norm_cfg=dict(type='LN'),
+            pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
+            hybrid_query=hybrid_query,
+            multi_value=multi_value),
+        train_cfg=dict(
+            dataset='nuScenes',
+            point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
+            grid_size=[1440, 1440, 41],
+            voxel_size=[0.075, 0.075, 0.2],
+            out_size_factor=8,
+            gaussian_overlap=0.1,
+            min_radius=2,
+            pos_weight=-1,
+            code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
+            assigner=dict(
+                type='HungarianAssigner3D',
+                iou_calculator=dict(type='BboxOverlaps3D', coordinate='lidar'),
+                cls_cost=dict(
+                    type='mmdet.FocalLossCost',
+                    gamma=2.0,
+                    alpha=0.25,
+                    weight=0.15),
+                reg_cost=dict(type='BBoxBEVL1Cost', weight=0.25),
+                iou_cost=dict(type='IoU3DCost', weight=0.25))),
+        test_cfg=dict(
+            dataset='nuScenes',
+            grid_size=[1440, 1440, 41],
+            out_size_factor=8,
+            voxel_size=[0.075, 0.075],
+            pc_range=[-54.0, -54.0],
+            nms_type=None),
+        common_heads=dict(
+            center=[2, 2], height=[1, 2], dim=[3, 2], rot=[2, 2], vel=[2, 2]),
+        bbox_coder=dict(
+            type='TransFusionBBoxCoder',
+            pc_range=[-54.0, -54.0],
+            post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+            score_threshold=0.1,
+            out_size_factor=8,
+            voxel_size=[0.075, 0.075],
+            code_size=10),
+        loss_cls=dict(
+            type='mmdet.FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            reduction='mean',
+            loss_weight=1.0),
+        loss_heatmap=dict(
+            type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1.0),
+        loss_bbox=dict(
+            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25)))
 
 train_pipeline = [
     dict(
@@ -117,7 +192,6 @@ train_pipeline = [
         prob=0.0,
         fixed_prob=True),
     dict(type='PointShuffle'),
-    dict(type='SwitchedModality', modal_prob=[0, 0, 1]),
     dict(
         type='Pack3DDetInputs',
         keys=[
@@ -129,7 +203,7 @@ train_pipeline = [
             'ori_lidar2img', 'img_aug_matrix', 'box_type_3d', 'sample_idx',
             'lidar_path', 'img_path', 'transformation_3d_flow', 'pcd_rotation',
             'pcd_scale_factor', 'pcd_trans', 'img_aug_matrix',
-            'lidar_aug_matrix', 'num_pts_feats','smt_number'
+            'lidar_aug_matrix', 'num_pts_feats'
         ])
 ]
 
@@ -152,7 +226,8 @@ test_pipeline = [
         use_dim=5,
         pad_empty_sweeps=True,
         remove_close=True,
-        backend_args=backend_args),
+        backend_args=backend_args,
+        lidar_drop=lidar_drop),
     dict(
         type='ImageAug3D',
         final_dim=[256, 704],
@@ -237,4 +312,3 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 load_from = './pretrained/convert_weight.pth'
-find_unused_parameters=True

@@ -132,21 +132,28 @@ class BEVFusionSparseEncoder(SparseEncoder):
         input_sp_tensor = SparseConvTensor(voxel_features, coors,
                                            self.sparse_shape, batch_size)
         x = self.conv_input(input_sp_tensor)
+        
+        def _inner_forward(y):
+            encode_features = []
+            for encoder_layer in self.encoder_layers:
+                y = encoder_layer(y)
+                encode_features.append(y)
 
-        encode_features = []
-        for encoder_layer in self.encoder_layers:
-            x = encoder_layer(x)
-            encode_features.append(x)
+            # for detection head
+            # [200, 176, 5] -> [200, 176, 2]
+            out = self.conv_out(encode_features[-1])
+            spatial_features = out.dense()
 
-        # for detection head
-        # [200, 176, 5] -> [200, 176, 2]
-        out = self.conv_out(encode_features[-1])
-        spatial_features = out.dense()
-
-        N, C, H, W, D = spatial_features.shape
-        spatial_features = spatial_features.permute(0, 1, 4, 2, 3).contiguous()
-        spatial_features = spatial_features.view(N, C * D, H, W)
-
+            N, C, H, W, D = spatial_features.shape
+            spatial_features = spatial_features.permute(0, 1, 4, 2, 3).contiguous()
+            spatial_features = spatial_features.view(N, C * D, H, W)
+            return spatial_features, encode_features
+            
+        if self.with_cp and x.features.requires_grad:
+            spatial_features, encode_features = cp.checkpoint(_inner_forward, x)
+        else:
+            spatial_features, encode_features = _inner_forward(x)
+            
         if self.return_middle_feats:
             return spatial_features, encode_features
         else:

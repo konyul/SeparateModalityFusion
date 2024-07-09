@@ -42,6 +42,8 @@ input_modality = dict(use_lidar=True, use_camera=False)
 #         's3://openmmlab/datasets/detection3d/nuscenes/'
 #     }))
 backend_args = None
+hybrid_query = True
+multi_value = False
 model = dict(
     type='BEVFusion',
     data_preprocessor=dict(
@@ -74,7 +76,7 @@ model = dict(
         layer_strides=[1, 2],
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         conv_cfg=dict(type='Conv2d', bias=False),
-        with_cp=True),
+        with_cp=False),
     pts_neck=dict(
         type='SECONDFPN',
         in_channels=[128, 256],
@@ -83,7 +85,7 @@ model = dict(
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         upsample_cfg=dict(type='deconv', bias=False),
         use_conv_for_no_stride=True,
-        with_cp=True),
+        with_cp=False),
     
     fusion_layer=dict(
         type='DeformableTransformer',
@@ -98,7 +100,7 @@ model = dict(
         d_model=256,
         nheads=8,
         _nheads=1,
-        num_encoder_layers=4,
+        num_encoder_layers=2,
         num_decoder_layers=0,
         num_img_encoder_layers=2,
         dim_feedforward=1024,
@@ -109,13 +111,14 @@ model = dict(
         dec_n_points=4,
         enc_n_points=4,
         two_stage=False,
-        num_queries=300,
-        with_cp=False
+        num_queries=300
             ),
     
     bbox_head=dict(
-        type='TransFusionHead',
-        num_proposals=200,
+        type='RobustHead',
+        num_proposals=400,
+        hybrid_query=hybrid_query,
+        multi_value=multi_value,
         auxiliary=True,
         in_channels=512,
         hidden_channel=128,
@@ -124,7 +127,7 @@ model = dict(
         bn_momentum=0.1,
         num_decoder_layers=1,
         decoder_layer=dict(
-            type='TransformerDecoderLayer',
+            type='CMTransformerDecoderLayer',
             self_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             cross_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
@@ -136,7 +139,8 @@ model = dict(
             ),
             norm_cfg=dict(type='LN'),
             pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
-            with_cp=True),
+            hybrid_query=hybrid_query,
+            multi_value=multi_value),
         train_cfg=dict(
             dataset='nuScenes',
             point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
@@ -184,8 +188,7 @@ model = dict(
         loss_heatmap=dict(
             type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1.0),
         loss_bbox=dict(
-            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
-        with_cp=True))
+            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25)))
 
 db_sampler = dict(
     data_root=data_root,

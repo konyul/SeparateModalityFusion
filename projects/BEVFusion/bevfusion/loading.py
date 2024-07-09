@@ -63,23 +63,23 @@ class BEVLoadMultiViewImageFromFiles(LoadMultiViewImageFromFiles):
         return img_with_mask
     
     def transform(self, results: dict) -> Optional[dict]:
-        # """Call function to load multi-view image from files.
+        """Call function to load multi-view image from files.
 
-        # Args:
-        #     results (dict): Result dict containing multi-view image filenames.
+        Args:
+            results (dict): Result dict containing multi-view image filenames.
 
-        # Returns:
-        #     dict: The result dict containing the multi-view image data.
-        #     Added keys and values are described below.
+        Returns:
+            dict: The result dict containing the multi-view image data.
+            Added keys and values are described below.
 
-        #         - filename (str): Multi-view image filenames.
-        #         - img (np.ndarray): Multi-view image arrays.
-        #         - img_shape (tuple[int]): Shape of multi-view image arrays.
-        #         - ori_shape (tuple[int]): Shape of original image arrays.
-        #         - pad_shape (tuple[int]): Shape of padded image arrays.
-        #         - scale_factor (float): Scale factor.
-        #         - img_norm_cfg (dict): Normalization configuration of images.
-        # """
+                - filename (str): Multi-view image filenames.
+                - img (np.ndarray): Multi-view image arrays.
+                - img_shape (tuple[int]): Shape of multi-view image arrays.
+                - ori_shape (tuple[int]): Shape of original image arrays.
+                - pad_shape (tuple[int]): Shape of padded image arrays.
+                - scale_factor (float): Scale factor.
+                - img_norm_cfg (dict): Normalization configuration of images.
+        """
         # TODO: consider split the multi-sweep part out of this pipeline
         # Derive the mask and transform for loading of multi-sweep data
         if self.num_ref_frames > 0:

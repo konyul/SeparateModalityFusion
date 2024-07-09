@@ -6,7 +6,7 @@ from mmcv.cnn import ConvModule
 from mmengine.model import BaseModule
 
 from mmdet3d.registry import MODELS
-import torch.utils.checkpoint as cp
+
 
 @MODELS.register_module()
 class GeneralizedLSSFPN(BaseModule):
@@ -23,7 +23,6 @@ class GeneralizedLSSFPN(BaseModule):
             norm_cfg=dict(type='BN2d'),
             act_cfg=dict(type='ReLU'),
             upsample_cfg=dict(mode='bilinear', align_corners=True),
-            with_cp=False,
     ) -> None:
         super().__init__()
         assert isinstance(in_channels, list)
@@ -74,7 +73,6 @@ class GeneralizedLSSFPN(BaseModule):
 
             self.lateral_convs.append(l_conv)
             self.fpn_convs.append(fpn_conv)
-        self.with_cp = with_cp
 
     def forward(self, inputs):
         """Forward function."""
@@ -93,14 +91,8 @@ class GeneralizedLSSFPN(BaseModule):
                 **self.upsample_cfg,
             )
             laterals[i] = torch.cat([laterals[i], x], dim=1)
-            if self.with_cp:
-                y = laterals[i]
-                y = cp.checkpoint(self.lateral_convs[i], y)
-                y = cp.checkpoint(self.fpn_convs[i], y)
-                laterals[i] = y
-            else:
-                laterals[i] = self.lateral_convs[i](laterals[i])
-                laterals[i] = self.fpn_convs[i](laterals[i])
+            laterals[i] = self.lateral_convs[i](laterals[i])
+            laterals[i] = self.fpn_convs[i](laterals[i])
 
         # build outputs
         outs = [laterals[i] for i in range(used_backbone_levels)]
