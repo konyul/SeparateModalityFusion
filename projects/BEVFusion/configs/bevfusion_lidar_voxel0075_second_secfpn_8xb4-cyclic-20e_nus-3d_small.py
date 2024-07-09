@@ -43,7 +43,7 @@ input_modality = dict(use_lidar=True, use_camera=False)
 #     }))
 backend_args = None
 hybrid_query = False
-multi_value = 'max'
+multi_value = 'sum'
 model = dict(
     type='BEVFusion',
     data_preprocessor=dict(
@@ -76,7 +76,7 @@ model = dict(
         layer_strides=[1, 2],
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         conv_cfg=dict(type='Conv2d', bias=False),
-        with_cp=False),
+        with_cp=True),
     pts_neck=dict(
         type='SECONDFPN',
         in_channels=[128, 256],
@@ -85,7 +85,7 @@ model = dict(
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         upsample_cfg=dict(type='deconv', bias=False),
         use_conv_for_no_stride=True,
-        with_cp=False),
+        with_cp=True),
     
     fusion_layer=dict(
         type='DeformableTransformer',
@@ -100,9 +100,9 @@ model = dict(
         d_model=256,
         nheads=8,
         _nheads=1,
-        num_encoder_layers=4,
+        num_encoder_layers=1,
         num_decoder_layers=0,
-        num_img_encoder_layers=2,
+        num_img_encoder_layers=1,
         dim_feedforward=1024,
         dropout=0.1,
         activation="relu",
@@ -140,7 +140,8 @@ model = dict(
             norm_cfg=dict(type='LN'),
             pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
             hybrid_query=hybrid_query,
-            multi_value=multi_value),
+            multi_value=multi_value,
+            with_cp=True),
         train_cfg=dict(
             dataset='nuScenes',
             point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
