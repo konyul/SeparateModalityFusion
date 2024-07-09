@@ -8,7 +8,7 @@ backend_args = None
 model = dict(
     type='BEVFusion',
     #freeze_img=True,
-    freeze_pts=True,
+    freeze_pts=False,
     sep_fg=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
@@ -238,5 +238,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_sum/epoch_5.pth'
-#find_unused_parameters=True
+load_from = './work_dirs/masking_strategy/version2/image_head_baseline/epoch_5.pth'
+find_unused_parameters=True

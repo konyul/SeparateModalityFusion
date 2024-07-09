@@ -26,7 +26,6 @@ from .deformable_transformer import build_deforamble_transformer
 from .deformable_utils.position_encoding import PositionEmbeddingSine
 from .utils import NestedTensor
 import cv2
-import matplotlib.pyplot as plt
 def clip_sigmoid(x, eps=1e-4):
     y = torch.clamp(x.sigmoid_(), min=eps, max=1 - eps)
     return y
@@ -104,7 +103,6 @@ class DeformableTransformer(nn.Module):
         if self.mask_img:
             self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
             self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
-            self.linear = nn.Conv2d(img_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
         self.initialize_weights()
@@ -195,16 +193,16 @@ class DeformableTransformer(nn.Module):
                 )
             pos_embeds = self.position_embedding(NestedTensor(s_proj, masks)).to(
                     s_proj.dtype)
-            inputs[1] = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
-            inputs[1] = self.pred(inputs[1])
-            inputs[1] = inputs[1].contiguous()
+            pts_feat = self.model([s_proj], [masks], [pos_embeds], [t_proj], query_embed=None)
+            pts_feat = self.pred(pts_feat)
+            pts_feat = pts_feat.contiguous()
             if self.residual == 'sum':
-                inputs[1] += residual_pts
+                pts_feat += residual_pts
         
         if _mask and inputs[0].requires_grad and self.mask_pts:
-            pts_feat = inputs[1].flatten(2).transpose(1, 2)         
+            pts_feat = pts_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[1].device
+                device=pts_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -220,6 +218,7 @@ class DeformableTransformer(nn.Module):
                 bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
                 pts_fg_loss = self.loss_weight * fg_loss
                 pts_bg_loss = self.loss_weight * bg_loss
+                pts_feat = pts_feat.transpose(1,2).reshape(1,256,180,180)
             else:
                 loss = (pts_feat - pts_target) ** 2
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
@@ -229,7 +228,6 @@ class DeformableTransformer(nn.Module):
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
-                inputs[0] = self.linear(inputs[0])
                 _src, img_mask = self.random_patch_masking(inputs[0])
         else:
             _src = inputs[0]
@@ -248,16 +246,16 @@ class DeformableTransformer(nn.Module):
                 )
             _pos_embeds = self._position_embedding(NestedTensor(_s_proj, _masks)).to(
                     _s_proj.dtype)
-            inputs[0] = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
-            inputs[0] = self._pred(inputs[0])
-            inputs[0] = inputs[0].contiguous()
+            img_feat = self._model([_s_proj], [_masks], [_pos_embeds], [_t_proj], query_embed=None)
+            img_feat = self._pred(img_feat)
+            img_feat = img_feat.contiguous()
             if self.residual == 'sum':
-                inputs[0] += residual_img
+                img_feat += residual_img
         
-        if _mask and inputs[0].requires_grad and self.mask_img:
-            img_feat = inputs[0].flatten(2).transpose(1, 2)         
+        if _mask and img_feat.requires_grad and self.mask_img:
+            img_feat = img_feat.flatten(2).transpose(1, 2)         
             if fg_bg_mask_list is not None:
-                device=inputs[0].device
+                device=img_feat.device
                 fg_mask, bg_mask = fg_bg_mask_list
                 fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
                 fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
@@ -273,6 +271,7 @@ class DeformableTransformer(nn.Module):
                 bg_loss = (bg_loss * img_mask).sum() / (bg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
                 img_fg_loss = self.loss_weight * fg_loss
                 img_bg_loss = self.loss_weight * bg_loss
+                img_feat = img_feat.transpose(1,2).reshape(1,80,180,180)
             else:
                 loss = (img_feat - img_target) ** 2
                 loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
@@ -287,14 +286,14 @@ class DeformableTransformer(nn.Module):
                 if self.mask_img:
                     loss_list['img_fg_loss'] = img_fg_loss
                     loss_list['img_bg_loss'] = img_bg_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
             else:
                 if self.mask_pts:
                     loss_list['pts_loss'] = pts_loss
                 if self.mask_img:
                     loss_list['img_loss'] = img_loss
-                return self.conv(torch.cat(inputs, dim=1)), loss_list
-        return self.conv(torch.cat(inputs, dim=1)), False
+                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
+        return self.conv(torch.cat([img_feat, pts_feat], dim=1)), False
 
 
     def forward(
@@ -1844,7 +1843,7 @@ class RobustHead(TransFusionHead):
                                          bias, loss_cls, loss_bbox, loss_heatmap, train_cfg, test_cfg, bbox_coder)
         self.shared_conv_img = build_conv_layer(
             dict(type='Conv2d'),
-            80,
+            256,
             hidden_channel,
             kernel_size=3,
             padding=1,
@@ -1852,7 +1851,7 @@ class RobustHead(TransFusionHead):
         )
         self.shared_conv_pts = build_conv_layer(
             dict(type='Conv2d'),
-            256,
+            512,
             hidden_channel,
             kernel_size=3,
             padding=1,
@@ -1861,7 +1860,6 @@ class RobustHead(TransFusionHead):
         self.hybrid_query = hybrid_query
         self.multi_value = multi_value
         self.query_labels_list = []
-        self.trial = 0
         
     def query_init(self, input_feature, modality):
         batch_size = input_feature.shape[0]
@@ -1948,17 +1946,16 @@ class RobustHead(TransFusionHead):
             list[dict]: Output results for tasks.
         """
         batch_size = inputs.shape[0]
-        
         # #################################
         # # query initialization
         # #################################
         if self.hybrid_query:
-            f_query_feat, f_key_feat, f_query_pos, f_dense_heatmap, f_heatmap, f_top_proposals_index, f_query_labels = self.query_init(inputs,'fusion')
-            i_query_feat, i_key_feat, i_query_pos, i_dense_heatmap, i_heatmap, i_top_proposals_index, i_query_labels = self.query_init(cm_feat[0],'image')
-            p_query_feat, p_key_feat, p_query_pos, p_dense_heatmap, p_heatmap, p_top_proposals_index, p_query_labels = self.query_init(cm_feat[1],'pts')
+            f_query_feat, f_key_feat, f_query_pos, f_dense_heatmap, f_heatmap, f_top_proposals_index, f_query_labels = self.query_init(inputs, 'fusion')
+            i_query_feat, i_key_feat, i_query_pos, i_dense_heatmap, i_heatmap, i_top_proposals_index, i_query_labels = self.query_init(cm_feat[0], 'image')
+            p_query_feat, p_key_feat, p_query_pos, p_dense_heatmap, p_heatmap, p_top_proposals_index, p_query_labels = self.query_init(cm_feat[1], 'pts')
             self.query_labels = torch.cat([f_query_labels, i_query_labels, p_query_labels], dim=-1)
         else:
-            f_query_feat, f_key_feat, f_query_pos, f_dense_heatmap, f_heatmap, f_top_proposals_index, f_query_labels = self.query_init(inputs,'fusion')
+            f_query_feat, f_key_feat, f_query_pos, f_dense_heatmap, f_heatmap, f_top_proposals_index, f_query_labels = self.query_init(inputs, 'fusion')
             self.query_labels = f_query_labels
             _i_key_feat = self.shared_conv_img(cm_feat[0])
             _p_key_feat = self.shared_conv_pts(cm_feat[1])
@@ -1969,7 +1966,7 @@ class RobustHead(TransFusionHead):
                                                _p_key_feat.shape[1],
                                                -1)  # [BS, C, H*W]
         bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(inputs.device)
-
+        
         #################################
         # transformer decoder layer (Fusion feature as K,V)
         #################################
@@ -2035,45 +2032,8 @@ class RobustHead(TransFusionHead):
                     [ret_dict[key] for ret_dict in ret_dicts], dim=-1)
             else:
                 new_res[key] = ret_dicts[0][key]
-        return [new_res]    
+        return [new_res]
 
-    def viz(self, tensor):
-        # 차원 변경
-        tensor = tensor.cpu().squeeze(0)
-
-        # 텐서 슬라이싱
-        first_200 = tensor[:, :200]
-        next_100 = tensor[:, 200:300]
-        last_100 = tensor[:, 300:]
-
-        # 0이 아닌 값 추출
-        first_200_scores = first_200[first_200.nonzero(as_tuple=True)]
-        next_100_scores = next_100[next_100.nonzero(as_tuple=True)]
-        last_100_scores = last_100[last_100.nonzero(as_tuple=True)]
-
-        # 시각화
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
-
-        ax1.hist(first_200_scores.numpy(), bins=20, edgecolor='black')
-        ax1.set_title('Score Distribution (First 200)')
-        ax1.set_xlabel('Score')
-        ax1.set_ylabel('Frequency')
-
-        ax2.hist(next_100_scores.numpy(), bins=20, edgecolor='black')
-        ax2.set_title('Score Distribution (Next 100)')
-        ax2.set_xlabel('Score')
-        ax2.set_ylabel('Frequency')
-
-        ax3.hist(last_100_scores.numpy(), bins=20, edgecolor='black')
-        ax3.set_title('Score Distribution (Last 100)')
-        ax3.set_xlabel('Score')
-        ax3.set_ylabel('Frequency')
-
-        plt.tight_layout()
-
-        # 시각화 결과 저장
-        plt.savefig(f'score_distribution_lidar_drop_{self.trial}.png')
-        plt.close()
     def predict_by_feat(self,
                         preds_dicts,
                         metas,
@@ -2100,8 +2060,7 @@ class RobustHead(TransFusionHead):
                 num_classes=self.num_classes).permute(0, 2, 1)
             batch_score = batch_score * preds_dict[0][
                 'query_heatmap_score'] * one_hot
-            # self.viz(batch_score)
-            # self.trial += 1
+
             batch_center = preds_dict[0]['center'][..., -self.num_proposals:]
             batch_height = preds_dict[0]['height'][..., -self.num_proposals:]
             batch_dim = preds_dict[0]['dim'][..., -self.num_proposals:]

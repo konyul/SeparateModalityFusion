@@ -7,7 +7,7 @@ backend_args = None
 
 model = dict(
     type='BEVFusion',
-    freeze_img=True,
+    freeze_img=False,
     sep_fg=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
@@ -28,7 +28,7 @@ model = dict(
         drop_path_rate=0.2,
         patch_norm=True,
         out_indices=[1, 2, 3],
-        with_cp=False,
+        with_cp=True,
         convert_weights=True,
         init_cfg=dict(
             type='Pretrained',

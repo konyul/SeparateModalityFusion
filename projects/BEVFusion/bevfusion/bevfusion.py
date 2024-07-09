@@ -16,8 +16,6 @@ from mmdet3d.utils import OptConfigType, OptMultiConfig, OptSampleList
 from .ops import Voxelization
 from mmdet3d.structures.ops import box_np_ops
 import cv2
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 @MODELS.register_module()
 class BEVFusion(Base3DDetector):
 
@@ -27,6 +25,7 @@ class BEVFusion(Base3DDetector):
         freeze_pts=False,
         sep_fg=False,
         smt=False,
+        use_pts_feat=False,
         data_preprocessor: OptConfigType = None,
         pts_voxel_encoder: Optional[dict] = None,
         pts_middle_encoder: Optional[dict] = None,
@@ -41,6 +40,8 @@ class BEVFusion(Base3DDetector):
         seg_head: Optional[dict] = None,
         imgpts_neck: Optional[dict] = None,
         masking_encoder: Optional[dict] = None,
+        img_backbone_decoder: Optional[dict] = None,
+        img_neck_decoder: Optional[dict] = None,
         **kwargs,
     ) -> None:
         voxelize_cfg = data_preprocessor.pop('voxelize_cfg')
@@ -77,6 +78,12 @@ class BEVFusion(Base3DDetector):
         self.masking_encoder = MODELS.build(masking_encoder) if masking_encoder else None
         self.head_name = bbox_head['type']
         self.bbox_head = MODELS.build(bbox_head)
+        self.img_backbone_decoder = MODELS.build(img_backbone_decoder) if img_backbone_decoder else None
+        self.img_neck_decoder = MODELS.build(img_neck_decoder) if img_neck_decoder else None
+        self.use_pts_feat = use_pts_feat
+        if self.use_pts_feat:
+            self._pts_backbone = MODELS.build(pts_backbone)
+            self._pts_neck = MODELS.build(pts_neck)
         self.freeze_img = freeze_img
         self.freeze_pts = freeze_pts
         self.sep_fg = sep_fg
@@ -289,69 +296,7 @@ class BEVFusion(Base3DDetector):
             pts_metas['pillars_num_points'] = sizes
             return pts_metas
         return feats, coords, sizes
-    
-    def visualize_bev(self, point_cloud, gt_boxes, pred_boxes, feat, start_idx=0, end_idx=400):
-        point_cloud = point_cloud.cpu()
-        gt_boxes = gt_boxes.cpu()
-        pred_boxes = pred_boxes.cpu()
-        # 2D 플롯 생성
-        fig, ax = plt.subplots(figsize=(8, 8))
 
-        # 포인트 클라우드 시각화
-        ax.scatter(point_cloud[:, 0], point_cloud[:, 1], s=0.1, c='gray')
-
-        # GT 바운딩 박스 시각화
-        for box in gt_boxes:
-            x, y, _, l, w, _, rot = box[:7].numpy()
-            rot = -rot
-            box_points = np.array([[l/2, w/2], [l/2, -w/2], [-l/2, -w/2], [-l/2, w/2], [l/2, w/2]])
-            rotation_matrix = np.array([[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]])
-            box_points = np.dot(box_points, rotation_matrix)
-            box_points += np.array([x, y])
-            ax.plot(box_points[:, 0], box_points[:, 1], c='green')
-
-        # 예측 바운딩 박스 시각화 (묶음별로 다른 색상 사용)
-        pred_colors = ['red', 'blue', 'orange']
-        pred_labels = ['Fused Pred Boxes', 'Image Pred Boxes', 'LiDAR Pred Boxes']
-
-        num_pred_boxes = len(pred_boxes)
-        start_idx = max(0, min(start_idx, num_pred_boxes))
-        end_idx = max(start_idx, min(end_idx, num_pred_boxes))
-        pred_boxes = pred_boxes[start_idx:end_idx]
-
-        group_sizes = [200, 100, 100]
-        group_start_indices = [0] + np.cumsum(group_sizes).tolist()[:-1]
-
-        for i, group_start_idx in enumerate(group_start_indices):
-            group_end_idx = min(group_start_idx + group_sizes[i], end_idx)
-            if group_start_idx >= group_end_idx:
-                break
-
-            boxes = pred_boxes[max(0, group_start_idx - start_idx):max(0, group_end_idx - start_idx)]
-            for box in boxes:
-                x, y, _, l, w, _, rot = box[:7].numpy()
-                rot = -rot
-                box_points = np.array([[l/2, w/2], [l/2, -w/2], [-l/2, -w/2], [-l/2, w/2], [l/2, w/2]])
-                rotation_matrix = np.array([[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]])
-                box_points = np.dot(box_points, rotation_matrix)
-                box_points += np.array([x, y])
-                ax.plot(box_points[:, 0], box_points[:, 1], c=pred_colors[i])
-
-        # 축 레이블 설정
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_aspect('equal')
-
-        # 색상에 대한 범례 표시
-        for color, label in zip(pred_colors, pred_labels):
-            ax.plot([], [], c=color, label=label)
-        ax.legend(loc='upper right')
-
-        # 시각화 결과 저장
-        plt.tight_layout()
-        plt.savefig(f"visualization_bev_color_legend_{feat}.png")
-        plt.close()
-        
     def predict(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
                 batch_data_samples: List[Det3DDataSample],
                 **kwargs) -> List[Det3DDataSample]:
@@ -366,14 +311,7 @@ class BEVFusion(Base3DDetector):
                 outputs = self.bbox_head.predict(feats, batch_input_metas)
 
         res = self.add_pred_to_datasample(batch_data_samples, outputs)
-        points = batch_inputs_dict['points'][0]
-        gt = res[0].eval_ann_info['gt_bboxes_3d'].tensor
-        pred = res[0].pred_instances_3d.bboxes_3d.tensor
-        # self.visualize_bev(points, gt, pred, 'no', start_idx=0, end_idx=0)
-        # self.visualize_bev(points, gt, pred, 'fused', start_idx=0, end_idx=200)
-        # self.visualize_bev(points, gt, pred, 'img', start_idx=200, end_idx=300)
-        # self.visualize_bev(points, gt, pred, 'lidar', start_idx=300, end_idx=400) 
-        # lidar_path = batch_data_samples[0].metainfo['lidar_path']
+
         return res
 
     def extract_feat(
@@ -430,6 +368,14 @@ class BEVFusion(Base3DDetector):
 
         x = self.pts_backbone(x)
         x = self.pts_neck(x)
+        if self.img_backbone_decoder is not None:
+            img_feature = self.img_backbone_decoder(img_feature.clone())
+        if self.img_neck_decoder is not None:   
+            img_feature = self.img_neck_decoder(img_feature)
+        if self.use_pts_feat:
+            pts_feature = self._pts_backbone(pts_feature.clone())
+            pts_feature = self._pts_neck(pts_feature)
+            pts_feature = pts_feature[0]
         return x, mask_loss, pts_loss, [img_feature, pts_feature]
 
     def fg_bg_mask(self, batch_data_samples):

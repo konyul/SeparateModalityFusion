@@ -42,6 +42,8 @@ input_modality = dict(use_lidar=True, use_camera=False)
 #         's3://openmmlab/datasets/detection3d/nuscenes/'
 #     }))
 backend_args = None
+hybrid_query = False
+multi_value = 'max'
 model = dict(
     type='BEVFusion',
     data_preprocessor=dict(
@@ -113,8 +115,10 @@ model = dict(
             ),
     
     bbox_head=dict(
-        type='TransFusionHead',
+        type='RobustHead',
         num_proposals=200,
+        hybrid_query=hybrid_query,
+        multi_value=multi_value,
         auxiliary=True,
         in_channels=512,
         hidden_channel=128,
@@ -123,7 +127,7 @@ model = dict(
         bn_momentum=0.1,
         num_decoder_layers=1,
         decoder_layer=dict(
-            type='TransformerDecoderLayer',
+            type='CMTransformerDecoderLayer',
             self_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             cross_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
@@ -134,7 +138,9 @@ model = dict(
                 act_cfg=dict(type='ReLU', inplace=True),
             ),
             norm_cfg=dict(type='LN'),
-            pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128)),
+            pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
+            hybrid_query=hybrid_query,
+            multi_value=multi_value),
         train_cfg=dict(
             dataset='nuScenes',
             point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
