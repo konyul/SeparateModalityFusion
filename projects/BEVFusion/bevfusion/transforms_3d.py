@@ -149,17 +149,17 @@ class BEVFusionGlobalRotScaleTrans(GlobalRotScaleTrans):
     class is rotation, translation and scaling (RTS)."""
 
     def transform(self, input_dict: dict) -> dict:
-        """Private function to rotate, scale and translate bounding boxes and
-        points.
+        # """Private function to rotate, scale and translate bounding boxes and
+        # points.
 
-        Args:
-            input_dict (dict): Result dict from loading pipeline.
+        # Args:
+        #     input_dict (dict): Result dict from loading pipeline.
 
-        Returns:
-            dict: Results after scaling, 'points', 'pcd_rotation',
-            'pcd_scale_factor', 'pcd_trans' and `gt_bboxes_3d` are updated
-            in the result dict.
-        """
+        # Returns:
+        #     dict: Results after scaling, 'points', 'pcd_rotation',
+        #     'pcd_scale_factor', 'pcd_trans' and `gt_bboxes_3d` are updated
+        #     in the result dict.
+        # """
         if 'transformation_3d_flow' not in input_dict:
             input_dict['transformation_3d_flow'] = []
 

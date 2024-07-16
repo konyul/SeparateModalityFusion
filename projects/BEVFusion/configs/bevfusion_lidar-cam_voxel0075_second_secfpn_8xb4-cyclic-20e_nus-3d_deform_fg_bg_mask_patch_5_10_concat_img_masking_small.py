@@ -251,5 +251,5 @@ default_hooks = dict(
     checkpoint=dict(type='CheckpointHook', interval=1))
 del _base_.custom_hooks
 
-load_from = './pretrained/convert_weight.pth'
+load_from = './pretrained/convert_weight_new.pth'
 # find_unused_parameters=True

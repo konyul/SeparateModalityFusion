@@ -98,10 +98,10 @@ class DeformableTransformer(nn.Module):
                             nn.GroupNorm(32, pts_channels),
                         )]) 
         if self.mask_pts:
-            self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
+            # self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
             self.pred = nn.Conv2d(pts_channels, pts_channels, kernel_size=1)
         if self.mask_img:
-            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
+            # self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
             self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
@@ -122,8 +122,8 @@ class DeformableTransformer(nn.Module):
             for _proj_ in self._target_proj:
                 nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
                 nn.init.constant_(_proj_[0].bias, 0)
-        torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
-        torch.nn.init.normal_(self.img_mask_tokens, std=.02)
+        # torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        # torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -180,7 +180,7 @@ class DeformableTransformer(nn.Module):
         if self.residual:
             residual_pts = inputs[1]
             residual_img = inputs[0]
-    
+
         prob = np.random.uniform()
         _mask = prob < self.mask_freq
         
@@ -190,10 +190,10 @@ class DeformableTransformer(nn.Module):
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
-        elif not _mask and inputs[0].requires_grad and self.mask_pts:
-            if self.mask_method == 'random_patch':
-                pts_target = inputs[1].flatten(2).transpose(1, 2)
-                src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
+        # elif not _mask and inputs[0].requires_grad and self.mask_pts:
+        #     if self.mask_method == 'random_patch':
+        #         pts_target = inputs[1].flatten(2).transpose(1, 2)
+        #         src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
         else:
             src = inputs[1]
         
@@ -247,10 +247,10 @@ class DeformableTransformer(nn.Module):
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
                 _src, img_mask = self.random_patch_masking(inputs[0])
-        elif not _mask and inputs[0].requires_grad and self.mask_img:
-            if self.mask_method == 'random_patch':
-                img_target = inputs[0].flatten(2).transpose(1, 2)
-                _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
+        # elif not _mask and inputs[0].requires_grad and self.mask_img:
+        #     if self.mask_method == 'random_patch':
+        #         img_target = inputs[0].flatten(2).transpose(1, 2)
+        #         _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
         else:
             _src = inputs[0]
         
@@ -2054,6 +2054,7 @@ class RobustHead(TransFusionHead):
                     [ret_dict[key] for ret_dict in ret_dicts], dim=-1)
             else:
                 new_res[key] = ret_dicts[0][key]
+
         return [new_res]
 
     def predict_by_feat(self,
@@ -2431,7 +2432,7 @@ class RobustHead(TransFusionHead):
             loss_heatmap = f_loss_heatmap + i_loss_heatmap + p_loss_heatmap
         else:
             f_loss_heatmap = self.loss_heatmap(
-                clip_sigmoid(preds_dict['dense_heatmap'][0]).float(),
+                clip_sigmoid(preds_dict['dense_heatmap']).float(),
                 heatmap.float(),
                 avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
             )

@@ -629,39 +629,39 @@ class GlobalAlignment(BaseTransform):
 
 @TRANSFORMS.register_module()
 class GlobalRotScaleTrans(BaseTransform):
-    """Apply global rotation, scaling and translation to a 3D scene.
+    # """Apply global rotation, scaling and translation to a 3D scene.
 
-    Required Keys:
+    # Required Keys:
 
-    - points (np.float32)
-    - gt_bboxes_3d (np.float32)
+    # - points (np.float32)
+    # - gt_bboxes_3d (np.float32)
 
-    Modified Keys:
+    # Modified Keys:
 
-    - points (np.float32)
-    - gt_bboxes_3d (np.float32)
+    # - points (np.float32)
+    # - gt_bboxes_3d (np.float32)
 
-    Added Keys:
+    # Added Keys:
 
-    - points (np.float32)
-    - pcd_trans (np.float32)
-    - pcd_rotation (np.float32)
-    - pcd_rotation_angle (np.float32)
-    - pcd_scale_factor (np.float32)
+    # - points (np.float32)
+    # - pcd_trans (np.float32)
+    # - pcd_rotation (np.float32)
+    # - pcd_rotation_angle (np.float32)
+    # - pcd_scale_factor (np.float32)
 
-    Args:
-        rot_range (list[float]): Range of rotation angle.
-            Defaults to [-0.78539816, 0.78539816] (close to [-pi/4, pi/4]).
-        scale_ratio_range (list[float]): Range of scale ratio.
-            Defaults to [0.95, 1.05].
-        translation_std (list[float]): The standard deviation of
-            translation noise applied to a scene, which
-            is sampled from a gaussian distribution whose standard deviation
-            is set by ``translation_std``. Defaults to [0, 0, 0].
-        shift_height (bool): Whether to shift height.
-            (the fourth dimension of indoor points) when scaling.
-            Defaults to False.
-    """
+    # Args:
+    #     rot_range (list[float]): Range of rotation angle.
+    #         Defaults to [-0.78539816, 0.78539816] (close to [-pi/4, pi/4]).
+    #     scale_ratio_range (list[float]): Range of scale ratio.
+    #         Defaults to [0.95, 1.05].
+    #     translation_std (list[float]): The standard deviation of
+    #         translation noise applied to a scene, which
+    #         is sampled from a gaussian distribution whose standard deviation
+    #         is set by ``translation_std``. Defaults to [0, 0, 0].
+    #     shift_height (bool): Whether to shift height.
+    #         (the fourth dimension of indoor points) when scaling.
+    #         Defaults to False.
+    # """
 
     def __init__(self,
                  rot_range: List[float] = [-0.78539816, 0.78539816],

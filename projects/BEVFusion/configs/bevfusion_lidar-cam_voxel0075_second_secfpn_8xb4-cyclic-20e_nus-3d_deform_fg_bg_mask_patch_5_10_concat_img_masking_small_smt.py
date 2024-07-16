@@ -69,7 +69,8 @@ model = dict(
         in_indices=[-1, 0],
         in_channels=[512, 128],
         out_channels=256,
-        scale_factor=2))
+        scale_factor=2)
+    )
 
 train_pipeline = [
     dict(
@@ -251,5 +252,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './work_dirs/masking_strategy/version2/image_head_baseline_small/epoch_5.pth'
+load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_3query_small/epoch_5.pth'
 # find_unused_parameters=True

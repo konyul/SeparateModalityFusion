@@ -21,6 +21,7 @@ else:
 
 model = dict(
     type='BEVFusion',
+    use_pts_feat=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         # mean=[123.675, 116.28, 103.53],
@@ -69,7 +70,19 @@ model = dict(
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2))
+        downsample=2),
+    img_backbone_decoder=dict(
+        type='GeneralizedResNet',
+        in_channels=80,
+        blocks=((2, 128, 2),
+                (2, 256, 2),
+                (2, 512, 1))),
+    img_neck_decoder=dict(
+        type='LSSFPN',
+        in_indices=[-1, 0],
+        in_channels=[512, 128],
+        out_channels=256,
+        scale_factor=2))
 
 train_pipeline = [
     dict(
