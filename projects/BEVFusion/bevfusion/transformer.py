@@ -131,20 +131,9 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
         super().__init__(**kwargs)
         self.hybrid_query = hybrid_query
         self.multi_value = multi_value
-        if self.hybrid_query:
-            self.self_posembed = PositionEncodingLearned(**pos_encoding_cfg)
-            self.self_posembedv2 = PositionEncodingLearned(**pos_encoding_cfg)
-            self.self_posembedv3 = PositionEncodingLearned(**pos_encoding_cfg)
-        else:
-            self.self_posembed = PositionEncodingLearned(**pos_encoding_cfg)
+        self.self_posembed = PositionEncodingLearned(**pos_encoding_cfg)
         self.cross_posembed = PositionEncodingLearned(**pos_encoding_cfg)
-        self.cross_posembedv2 = PositionEncodingLearned(**pos_encoding_cfg)
-        self.cross_posembedv3 = PositionEncodingLearned(**pos_encoding_cfg)
-        self.cross_attn_img = MultiheadAttention(**self.cross_attn_cfg)
-        self.cross_attn_pts = MultiheadAttention(**self.cross_attn_cfg)
         self.with_cp = with_cp
-        self.i_query_norm = copy.deepcopy(self.norms[1])
-        self.p_query_norm = copy.deepcopy(self.norms[1])
 
     def forward(self,
                 query,
@@ -188,16 +177,16 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
         if self.self_posembed is not None and query_pos is not None:
             if self.hybrid_query:
                 f_query_pos = self.self_posembed(query_pos[0]).transpose(1, 2)
-                i_query_pos = self.self_posembedv2(query_pos[1]).transpose(1, 2)
-                p_query_pos = self.self_posembedv3(query_pos[2]).transpose(1, 2)
+                i_query_pos = self.self_posembed(query_pos[1]).transpose(1, 2)
+                p_query_pos = self.self_posembed(query_pos[2]).transpose(1, 2)
             else:
                 f_query_pos = self.self_posembed(query_pos).transpose(1, 2)
         else:
             query_pos = None
         if self.cross_posembed is not None and key_pos is not None:
             f_key_pos = self.cross_posembed(key_pos).transpose(1, 2)
-            i_key_pos = self.cross_posembedv2(key_pos).transpose(1, 2)
-            p_key_pos = self.cross_posembedv3(key_pos).transpose(1, 2)
+            i_key_pos = self.cross_posembed(key_pos).transpose(1, 2)
+            p_key_pos = self.cross_posembed(key_pos).transpose(1, 2)
         else:
             key_pos = None
         if self.hybrid_query:
@@ -238,12 +227,12 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
         if self.with_cp:
             if self.hybrid_query:
                 f_query = cp.checkpoint(self.cross_attn, query[:,:f_num_proposal,:], key[0], key[0] + f_key_pos, None, f_query_pos, f_key_pos, cross_attn_mask,key_padding_mask)
-                i_query = cp.checkpoint(self.cross_attn_img, query[:,f_num_proposal:f_num_proposal+100,:], key[1], key[1] + i_key_pos, None, i_query_pos, i_key_pos, cross_attn_mask,key_padding_mask)
-                p_query = cp.checkpoint(self.cross_attn_pts, query[:,f_num_proposal+100:f_num_proposal+200,:], key[2], key[2] + p_key_pos, None, p_query_pos, p_key_pos, cross_attn_mask,key_padding_mask)
+                i_query = cp.checkpoint(self.cross_attn, query[:,f_num_proposal:f_num_proposal+100,:], key[1], key[1] + i_key_pos, None, i_query_pos, i_key_pos, cross_attn_mask,key_padding_mask)
+                p_query = cp.checkpoint(self.cross_attn, query[:,f_num_proposal+100:f_num_proposal+200,:], key[2], key[2] + p_key_pos, None, p_query_pos, p_key_pos, cross_attn_mask,key_padding_mask)
             else:
                 f_query = cp.checkpoint(self.cross_attn, query, key[0], key[0]+f_key_pos, None, f_query_pos, f_key_pos, cross_attn_mask, key_padding_mask)
-                i_query = cp.checkpoint(self.cross_attn_img, query, key[1], key[1] + i_key_pos, None, f_query_pos, i_key_pos, cross_attn_mask, key_padding_mask)
-                p_query = cp.checkpoint(self.cross_attn_pts, query, key[2], key[2] + p_key_pos, None, f_query_pos, p_key_pos, cross_attn_mask, key_padding_mask)
+                i_query = cp.checkpoint(self.cross_attn, query, key[1], key[1] + i_key_pos, None, f_query_pos, i_key_pos, cross_attn_mask, key_padding_mask)
+                p_query = cp.checkpoint(self.cross_attn, query, key[2], key[2] + p_key_pos, None, f_query_pos, p_key_pos, cross_attn_mask, key_padding_mask)
         else:
             if self.hybrid_query:
                 f_query = self.cross_attn(
@@ -255,7 +244,7 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
                     attn_mask=cross_attn_mask,
                     key_padding_mask=key_padding_mask,
                     **kwargs)
-                i_query = self.cross_attn_img(
+                i_query = self.cross_attn(
                     query=query[:,f_num_proposal:f_num_proposal+100,:],
                     key=key[1],
                     value=key[1] + i_key_pos,
@@ -264,7 +253,7 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
                     attn_mask=cross_attn_mask,
                     key_padding_mask=key_padding_mask,
                     **kwargs)
-                p_query = self.cross_attn_pts(
+                p_query = self.cross_attn(
                     query=query[:,f_num_proposal+100:f_num_proposal+200,:],
                     key=key[2],
                     value=key[2] + p_key_pos,
@@ -283,7 +272,7 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
                     attn_mask=cross_attn_mask,
                     key_padding_mask=key_padding_mask,
                     **kwargs)
-                i_query = self.cross_attn_img(
+                i_query = self.cross_attn(
                     query=query,
                     key=key[1],
                     value=key[1] + i_key_pos,
@@ -292,7 +281,7 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
                     attn_mask=cross_attn_mask,
                     key_padding_mask=key_padding_mask,
                     **kwargs)
-                p_query = self.cross_attn_pts(
+                p_query = self.cross_attn(
                     query=query,
                     key=key[2],
                     value=key[2] + p_key_pos,
@@ -301,9 +290,6 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
                     attn_mask=cross_attn_mask,
                     key_padding_mask=key_padding_mask,
                     **kwargs)
-        f_query = self.norms[1](f_query)
-        i_query = self.i_query_norm(i_query)
-        p_query = self.p_query_norm(p_query)
         if self.hybrid_query:
             query = torch.cat([f_query, i_query, p_query], dim=1).contiguous()
         if self.multi_value == 'sum':
@@ -312,6 +298,7 @@ class CMTransformerDecoderLayer(DetrTransformerDecoderLayer):
             query = torch.max(torch.stack([f_query, i_query, p_query]), dim=0)[0]
         if not self.hybrid_query and self.multi_value not in ['sum', 'max']:
             AssertionError('Queries are not fused')
+        query = self.norms[1](query)
         query = self.ffn(query)
         query = self.norms[2](query)
 

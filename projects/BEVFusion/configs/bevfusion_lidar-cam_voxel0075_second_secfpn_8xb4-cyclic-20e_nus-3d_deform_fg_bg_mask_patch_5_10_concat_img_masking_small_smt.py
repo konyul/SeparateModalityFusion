@@ -63,13 +63,15 @@ model = dict(
         in_channels=80,
         blocks=((2, 128, 2),
                 (2, 256, 2),
-                (2, 512, 1))),
+                (2, 512, 1)),
+        with_cp=True),
     img_neck_decoder=dict(
         type='LSSFPN',
         in_indices=[-1, 0],
         in_channels=[512, 128],
         out_channels=256,
-        scale_factor=2)
+        scale_factor=2,
+        with_cp=True)
     )
 
 train_pipeline = [
@@ -252,5 +254,5 @@ default_hooks = dict(
 del _base_.custom_hooks
 
 #load_from = './pretrained/convert_weight.pth'
-load_from = './work_dirs/masking_strategy/version2/image_head_robusthead_3query_small/epoch_5.pth'
+load_from = './work_dirs/masking_strategy/version2/image_head_3query_new_small/epoch_5.pth'
 # find_unused_parameters=True

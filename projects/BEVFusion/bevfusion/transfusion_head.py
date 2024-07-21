@@ -98,10 +98,10 @@ class DeformableTransformer(nn.Module):
                             nn.GroupNorm(32, pts_channels),
                         )]) 
         if self.mask_pts:
-            # self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
+            self.pts_mask_tokens = nn.Parameter(torch.zeros(1, 1, pts_channels))
             self.pred = nn.Conv2d(pts_channels, pts_channels, kernel_size=1)
         if self.mask_img:
-            # self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
+            self.img_mask_tokens = nn.Parameter(torch.zeros(1, 1, img_channels))
             self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
@@ -122,8 +122,8 @@ class DeformableTransformer(nn.Module):
             for _proj_ in self._target_proj:
                 nn.init.xavier_uniform_(_proj_[0].weight, gain=1)
                 nn.init.constant_(_proj_[0].bias, 0)
-        # torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
-        # torch.nn.init.normal_(self.img_mask_tokens, std=.02)
+        torch.nn.init.normal_(self.pts_mask_tokens, std=.02)
+        torch.nn.init.normal_(self.img_mask_tokens, std=.02)
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
@@ -190,10 +190,10 @@ class DeformableTransformer(nn.Module):
             if self.mask_method == 'random_patch':
                 pts_target = inputs[1].flatten(2).transpose(1, 2)
                 src, pts_mask = self.random_patch_masking(inputs[1])
-        # elif not _mask and inputs[0].requires_grad and self.mask_pts:
-        #     if self.mask_method == 'random_patch':
-        #         pts_target = inputs[1].flatten(2).transpose(1, 2)
-        #         src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
+        elif not _mask and inputs[0].requires_grad and self.mask_pts:
+            if self.mask_method == 'random_patch':
+                pts_target = inputs[1].flatten(2).transpose(1, 2)
+                src, pts_mask = self.random_patch_masking(inputs[1], with_cp=True)
         else:
             src = inputs[1]
         
@@ -247,10 +247,10 @@ class DeformableTransformer(nn.Module):
             if self.mask_method == 'random_patch':
                 img_target = inputs[0].flatten(2).transpose(1, 2)
                 _src, img_mask = self.random_patch_masking(inputs[0])
-        # elif not _mask and inputs[0].requires_grad and self.mask_img:
-        #     if self.mask_method == 'random_patch':
-        #         img_target = inputs[0].flatten(2).transpose(1, 2)
-        #         _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
+        elif not _mask and inputs[0].requires_grad and self.mask_img:
+            if self.mask_method == 'random_patch':
+                img_target = inputs[0].flatten(2).transpose(1, 2)
+                _src, img_mask = self.random_patch_masking(inputs[0], with_cp=True)
         else:
             _src = inputs[0]
         
@@ -1871,14 +1871,6 @@ class RobustHead(TransFusionHead):
             padding=1,
             bias=bias,
         )
-        self.shared_conv_pts = build_conv_layer(
-            dict(type='Conv2d'),
-            512,
-            hidden_channel,
-            kernel_size=3,
-            padding=1,
-            bias=bias,
-        )
         self.hybrid_query = hybrid_query
         self.multi_value = multi_value
         self.query_labels_list = []
@@ -1892,7 +1884,7 @@ class RobustHead(TransFusionHead):
             fusion_feat = self.shared_conv_img(input_feature)
             num_proposals = 100
         elif modality == 'pts':
-            fusion_feat = self.shared_conv_pts(input_feature)
+            fusion_feat = self.shared_conv(input_feature)
             num_proposals = 100
         
         #################################
@@ -2054,7 +2046,7 @@ class RobustHead(TransFusionHead):
                     [ret_dict[key] for ret_dict in ret_dicts], dim=-1)
             else:
                 new_res[key] = ret_dicts[0][key]
-
+        
         return [new_res]
 
     def predict_by_feat(self,
@@ -2211,315 +2203,42 @@ class RobustHead(TransFusionHead):
         ) == 1, f'only support one layer now, but get {len(rets)} layers'
 
         return rets[0]
-
-    def get_targets_single(self, gt_instances_3d, preds_dict, batch_idx):
-        """Generate training targets for a single sample.
-        Args:
-            gt_instances_3d (:obj:`InstanceData`): ground truth of instances.
-            preds_dict (dict): dict of prediction result for a single sample.
-        Returns:
-            tuple[torch.Tensor]: Tuple of target including \
-                the following results in order.
-                - torch.Tensor: classification target.  [1, num_proposals]
-                - torch.Tensor: classification weights (mask) [1,
-                    num_proposals] # noqa: E501
-                - torch.Tensor: regression target. [1, num_proposals, 8]
-                - torch.Tensor: regression weights. [1, num_proposals, 8]
-                - torch.Tensor: iou target. [1, num_proposals]
-                - int: number of positive proposals
-                - torch.Tensor: heatmap targets.
-        """
-        # 1. Assignment
-        gt_bboxes_3d = gt_instances_3d.bboxes_3d
-        gt_labels_3d = gt_instances_3d.labels_3d
-        num_proposals = preds_dict['center'].shape[-1]
-
-        # get pred boxes, carefully ! don't change the network outputs
-        score = copy.deepcopy(preds_dict['heatmap'].detach())
-        center = copy.deepcopy(preds_dict['center'].detach())
-        height = copy.deepcopy(preds_dict['height'].detach())
-        dim = copy.deepcopy(preds_dict['dim'].detach())
-        rot = copy.deepcopy(preds_dict['rot'].detach())
-        if 'vel' in preds_dict.keys():
-            vel = copy.deepcopy(preds_dict['vel'].detach())
-        else:
-            vel = None
-
-        boxes_dict = self.bbox_coder.decode(
-            score, rot, dim, center, height,
-            vel)  # decode the prediction to real world metric bbox
-        bboxes_tensor = boxes_dict[0]['bboxes']
-        gt_bboxes_tensor = gt_bboxes_3d.tensor.to(score.device)
-        # each layer should do label assign separately.
-        if self.auxiliary:
-            num_layer = self.num_decoder_layers
-        else:
-            num_layer = 1
-
-        assign_result_list = []
-        for idx_layer in range(num_layer):
-            bboxes_tensor_layer = bboxes_tensor[self.num_proposals *
-                                                idx_layer:self.num_proposals *
-                                                (idx_layer + 1), :]
-            score_layer = score[..., self.num_proposals *
-                                idx_layer:self.num_proposals *
-                                (idx_layer + 1), ]
-
-            if self.train_cfg.assigner.type == 'HungarianAssigner3D':
-                assign_result = self.bbox_assigner.assign(
-                    bboxes_tensor_layer,
-                    gt_bboxes_tensor,
-                    gt_labels_3d,
-                    score_layer,
-                    self.train_cfg,
-                )
-            elif self.train_cfg.assigner.type == 'HeuristicAssigner':
-                assign_result = self.bbox_assigner.assign(
-                    bboxes_tensor_layer,
-                    gt_bboxes_tensor,
-                    None,
-                    gt_labels_3d,
-                    self.query_labels[batch_idx],
-                )
-            else:
-                raise NotImplementedError
-            assign_result_list.append(assign_result)
-
-        # combine assign result of each layer
-        assign_result_ensemble = AssignResult(
-            num_gts=sum([res.num_gts for res in assign_result_list]),
-            gt_inds=torch.cat([res.gt_inds for res in assign_result_list]),
-            max_overlaps=torch.cat(
-                [res.max_overlaps for res in assign_result_list]),
-            labels=torch.cat([res.labels for res in assign_result_list]),
-        )
-
-        # 2. Sampling. Compatible with the interface of `PseudoSampler` in
-        # mmdet.
-        gt_instances, pred_instances = InstanceData(
-            bboxes=gt_bboxes_tensor), InstanceData(priors=bboxes_tensor)
-        sampling_result = self.bbox_sampler.sample(assign_result_ensemble,
-                                                   pred_instances,
-                                                   gt_instances)
-        pos_inds = sampling_result.pos_inds
-        neg_inds = sampling_result.neg_inds
-        assert len(pos_inds) + len(neg_inds) == num_proposals
-
-        # 3. Create target for loss computation
-        bbox_targets = torch.zeros([num_proposals, self.bbox_coder.code_size
-                                    ]).to(center.device)
-        bbox_weights = torch.zeros([num_proposals, self.bbox_coder.code_size
-                                    ]).to(center.device)
-        ious = assign_result_ensemble.max_overlaps
-        ious = torch.clamp(ious, min=0.0, max=1.0)
-        labels = bboxes_tensor.new_zeros(num_proposals, dtype=torch.long)
-        label_weights = bboxes_tensor.new_zeros(
-            num_proposals, dtype=torch.long)
-
-        if gt_labels_3d is not None:  # default label is -1
-            labels += self.num_classes
-
-        # both pos and neg have classification loss, only pos has regression
-        # and iou loss
-        if len(pos_inds) > 0:
-            pos_bbox_targets = self.bbox_coder.encode(
-                sampling_result.pos_gt_bboxes)
-
-            bbox_targets[pos_inds, :] = pos_bbox_targets
-            bbox_weights[pos_inds, :] = 1.0
-
-            if gt_labels_3d is None:
-                labels[pos_inds] = 1
-            else:
-                labels[pos_inds] = gt_labels_3d[
-                    sampling_result.pos_assigned_gt_inds]
-            if self.train_cfg.pos_weight <= 0:
-                label_weights[pos_inds] = 1.0
-            else:
-                label_weights[pos_inds] = self.train_cfg.pos_weight
-
-        if len(neg_inds) > 0:
-            label_weights[neg_inds] = 1.0
-
-        # # compute dense heatmap targets
-        device = labels.device
-        gt_bboxes_3d = torch.cat(
-            [gt_bboxes_3d.gravity_center, gt_bboxes_3d.tensor[:, 3:]],
-            dim=1).to(device)
-        grid_size = torch.tensor(self.train_cfg['grid_size'])
-        pc_range = torch.tensor(self.train_cfg['point_cloud_range'])
-        voxel_size = torch.tensor(self.train_cfg['voxel_size'])
-        feature_map_size = (grid_size[:2] // self.train_cfg['out_size_factor']
-                            )  # [x_len, y_len]
-        heatmap = gt_bboxes_3d.new_zeros(self.num_classes, feature_map_size[1],
-                                         feature_map_size[0])
-        for idx in range(len(gt_bboxes_3d)):
-            width = gt_bboxes_3d[idx][3]
-            length = gt_bboxes_3d[idx][4]
-            width = width / voxel_size[0] / self.train_cfg['out_size_factor']
-            length = length / voxel_size[1] / self.train_cfg['out_size_factor']
-            if width > 0 and length > 0:
-                radius = gaussian_radius(
-                    (length, width),
-                    min_overlap=self.train_cfg['gaussian_overlap'])
-                radius = max(self.train_cfg['min_radius'], int(radius))
-                x, y = gt_bboxes_3d[idx][0], gt_bboxes_3d[idx][1]
-
-                coor_x = ((x - pc_range[0]) / voxel_size[0] /
-                          self.train_cfg['out_size_factor'])
-                coor_y = ((y - pc_range[1]) / voxel_size[1] /
-                          self.train_cfg['out_size_factor'])
-
-                center = torch.tensor([coor_x, coor_y],
-                                      dtype=torch.float32,
-                                      device=device)
-                center_int = center.to(torch.int32)
-
-                # original
-                # draw_heatmap_gaussian(heatmap[gt_labels_3d[idx]], center_int, radius) # noqa: E501
-                # NOTE: fix
-                draw_heatmap_gaussian(heatmap[gt_labels_3d[idx]],
-                                      center_int[[1, 0]], radius)
-
-        mean_iou = ious[pos_inds].sum() / max(len(pos_inds), 1)
-        return (
-            labels[None],
-            label_weights[None],
-            bbox_targets[None],
-            bbox_weights[None],
-            ious[None],
-            int(pos_inds.shape[0]),
-            float(mean_iou),
-            heatmap[None],
-        )
-
-    def loss_by_feat(self, preds_dicts: Tuple[List[dict]],
-                     batch_gt_instances_3d: List[InstanceData], *args,
-                     **kwargs):
-        (
-            labels,
-            label_weights,
-            bbox_targets,
-            bbox_weights,
-            ious,
-            num_pos,
-            matched_ious,
-            heatmap,
-        ) = self.get_targets(batch_gt_instances_3d, preds_dicts[0])
-        if hasattr(self, 'on_the_image_mask'):
-            label_weights = label_weights * self.on_the_image_mask
-            bbox_weights = bbox_weights * self.on_the_image_mask[:, :, None]
-            num_pos = bbox_weights.max(-1).values.sum()
-        preds_dict = preds_dicts[0][0]
-        loss_dict = dict()
-        # compute heatmap loss
-        if self.hybrid_query:
-            f_loss_heatmap = self.loss_heatmap(
-                clip_sigmoid(preds_dict['dense_heatmap'][0]).float(),
-                heatmap.float(),
-                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
-            )
-            i_loss_heatmap = self.loss_heatmap(
-                clip_sigmoid(preds_dict['dense_heatmap'][1]).float(),
-                heatmap.float(),
-                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
-            )
-            p_loss_heatmap = self.loss_heatmap(
-                clip_sigmoid(preds_dict['dense_heatmap'][2]).float(),
-                heatmap.float(),
-                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
-            )
-            loss_heatmap = f_loss_heatmap + i_loss_heatmap + p_loss_heatmap
-        else:
-            f_loss_heatmap = self.loss_heatmap(
-                clip_sigmoid(preds_dict['dense_heatmap']).float(),
-                heatmap.float(),
-                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
-            )
-            loss_heatmap = f_loss_heatmap
-        loss_dict['loss_heatmap'] = loss_heatmap
-
-        # compute loss for each layer
-        for idx_layer in range(
-                self.num_decoder_layers if self.auxiliary else 1):
-            if idx_layer == self.num_decoder_layers - 1 or (
-                    idx_layer == 0 and self.auxiliary is False):
-                prefix = 'layer_-1'
-            else:
-                prefix = f'layer_{idx_layer}'
-
-            layer_labels = labels[..., idx_layer *
-                                  self.num_proposals:(idx_layer + 1) *
-                                  self.num_proposals, ].reshape(-1)
-            layer_label_weights = label_weights[
-                ..., idx_layer * self.num_proposals:(idx_layer + 1) *
-                self.num_proposals, ].reshape(-1)
-            layer_score = preds_dict['heatmap'][..., idx_layer *
-                                                self.num_proposals:(idx_layer +
-                                                                    1) *
-                                                self.num_proposals, ]
-            layer_cls_score = layer_score.permute(0, 2, 1).reshape(
-                -1, self.num_classes)
-            layer_loss_cls = self.loss_cls(
-                layer_cls_score.float(),
-                layer_labels,
-                layer_label_weights,
-                avg_factor=max(num_pos, 1),
-            )
-
-            layer_center = preds_dict['center'][..., idx_layer *
-                                                self.num_proposals:(idx_layer +
-                                                                    1) *
-                                                self.num_proposals, ]
-            layer_height = preds_dict['height'][..., idx_layer *
-                                                self.num_proposals:(idx_layer +
-                                                                    1) *
-                                                self.num_proposals, ]
-            layer_rot = preds_dict['rot'][..., idx_layer *
-                                          self.num_proposals:(idx_layer + 1) *
-                                          self.num_proposals, ]
-            layer_dim = preds_dict['dim'][..., idx_layer *
-                                          self.num_proposals:(idx_layer + 1) *
-                                          self.num_proposals, ]
-            preds = torch.cat(
-                [layer_center, layer_height, layer_dim, layer_rot],
-                dim=1).permute(0, 2, 1)  # [BS, num_proposals, code_size]
-            if 'vel' in preds_dict.keys():
-                layer_vel = preds_dict['vel'][..., idx_layer *
-                                              self.num_proposals:(idx_layer +
-                                                                  1) *
-                                              self.num_proposals, ]
-                preds = torch.cat([
-                    layer_center, layer_height, layer_dim, layer_rot, layer_vel
-                ],
-                                  dim=1).permute(
-                                      0, 2,
-                                      1)  # [BS, num_proposals, code_size]
-            code_weights = self.train_cfg.get('code_weights', None)
-            layer_bbox_weights = bbox_weights[:, idx_layer *
-                                              self.num_proposals:(idx_layer +
-                                                                  1) *
-                                              self.num_proposals, :, ]
-            layer_reg_weights = layer_bbox_weights * layer_bbox_weights.new_tensor(  # noqa: E501
-                code_weights)
-            layer_bbox_targets = bbox_targets[:, idx_layer *
-                                              self.num_proposals:(idx_layer +
-                                                                  1) *
-                                              self.num_proposals, :, ]
-            layer_loss_bbox = self.loss_bbox(
-                preds,
-                layer_bbox_targets,
-                layer_reg_weights,
-                avg_factor=max(num_pos, 1))
-
-            loss_dict[f'{prefix}_loss_cls'] = layer_loss_cls
-            loss_dict[f'{prefix}_loss_bbox'] = layer_loss_bbox
-            # loss_dict[f'{prefix}_loss_iou'] = layer_loss_iou
-
-        loss_dict['matched_ious'] = layer_loss_cls.new_tensor(matched_ious)
-
-        return loss_dict
     
+    def separate_dict(self, predict, gt_instances):
+        dict_f = {}
+        dict_i = {}
+        dict_p = {}
+        for key, value in predict[0][0].items():
+            if key == 'dense_heatmap':
+                dict_f[key] = value[0]
+                dict_i[key] = value[1]
+                dict_p[key] = value[2]
+            else:
+                split_tensors = torch.split(value, [200, 100, 100], dim=-1)
+                # Assign to new dictionaries
+                dict_f[key] = split_tensors[0]
+                dict_i[key] = split_tensors[1]
+                dict_p[key] = split_tensors[2]
+        dict_f_lst = []
+        dict_f_lst.append(dict_f)
+        dict_i_lst = []
+        dict_i_lst.append(dict_i)
+        dict_p_lst = []
+        dict_p_lst.append(dict_p)
+        loss_f = self.loss_by_feat((dict_f_lst,), gt_instances)
+        loss_i = self.loss_by_feat((dict_i_lst,), gt_instances)
+        loss_p = self.loss_by_feat((dict_p_lst,), gt_instances)
+        result = {}
+        for key in loss_f.keys():
+            if key == 'matched_ious':
+                # matched_ious의 경우 평균을 계산
+                result[key] = (loss_f[key] + loss_i[key] + loss_p[key]) / 3
+            else:
+                # 나머지 키에 대해서는 단순히 더함
+                result[key] = loss_f[key] + loss_i[key] + loss_p[key]
+        return result
+        
+        
     def loss(self, batch_feats, cm_feat, batch_data_samples):
         """Loss function for CenterHead.
 
@@ -2536,7 +2255,10 @@ class RobustHead(TransFusionHead):
             batch_input_metas.append(data_sample.metainfo)
             batch_gt_instances_3d.append(data_sample.gt_instances_3d)
         preds_dicts = self(batch_feats, cm_feat, batch_input_metas)
-        loss = self.loss_by_feat(preds_dicts, batch_gt_instances_3d)
+        if self.hybrid_query:
+            loss = self.separate_dict(preds_dicts, batch_gt_instances_3d)
+        else:
+            loss = self.loss_by_feat(preds_dicts, batch_gt_instances_3d)
 
         return loss
 

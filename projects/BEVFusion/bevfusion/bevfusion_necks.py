@@ -7,7 +7,7 @@ from mmengine.model import BaseModule
 from typing import List, Tuple
 from mmcv.cnn.resnet import BasicBlock, make_res_layer
 from mmdet3d.registry import MODELS
-
+import torch.utils.checkpoint as cp
 
 @MODELS.register_module()
 class GeneralizedLSSFPN(BaseModule):
@@ -105,6 +105,7 @@ class GeneralizedResNet(nn.ModuleList):
         self,
         in_channels: int,
         blocks: List[Tuple[int, int, int]],
+        with_cp=False,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -121,11 +122,15 @@ class GeneralizedResNet(nn.ModuleList):
             )
             in_channels = out_channels
             self.append(blocks)
+        self.with_cp = with_cp
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         outputs = []
         for module in self:
-            x = module(x)
+            if self.with_cp:
+                x = cp.checkpoint(module, x)
+            else:
+                x = module(x)
             outputs.append(x)
         return outputs
 
@@ -139,6 +144,7 @@ class LSSFPN(nn.Module):
         in_channels: Tuple[int, int],
         out_channels: int,
         scale_factor: int = 1,
+        with_cp = False
     ) -> None:
         super().__init__()
         self.in_indices = in_indices
@@ -165,6 +171,7 @@ class LSSFPN(nn.Module):
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(True),
             )
+        self.with_cp = with_cp
 
     def forward(self, x: List[torch.Tensor]) -> torch.Tensor:
         x1 = x[self.in_indices[0]]
@@ -180,8 +187,10 @@ class LSSFPN(nn.Module):
             align_corners=True,
         )
         x = torch.cat([x1, x2], dim=1)
-
-        x = self.fuse(x)
+        if self.with_cp:
+            x = cp.checkpoint(self.fuse, x)
+        else:
+            x = self.fuse(x)
         if self.scale_factor > 1:
             x = self.upsample(x)
         return x

@@ -81,9 +81,6 @@ class BEVFusion(Base3DDetector):
         self.img_backbone_decoder = MODELS.build(img_backbone_decoder) if img_backbone_decoder else None
         self.img_neck_decoder = MODELS.build(img_neck_decoder) if img_neck_decoder else None
         self.use_pts_feat = use_pts_feat
-        if self.use_pts_feat:
-            self._pts_backbone = MODELS.build(pts_backbone)
-            self._pts_neck = MODELS.build(pts_neck)
         self.freeze_img = freeze_img
         self.freeze_pts = freeze_pts
         self.sep_fg = sep_fg
@@ -373,8 +370,8 @@ class BEVFusion(Base3DDetector):
         if self.img_neck_decoder is not None:   
             img_feature = self.img_neck_decoder(img_feature)
         if self.use_pts_feat:
-            pts_feature = self._pts_backbone(pts_feature.clone())
-            pts_feature = self._pts_neck(pts_feature)
+            pts_feature = self.pts_backbone(pts_feature.clone())
+            pts_feature = self.pts_neck(pts_feature)
             pts_feature = pts_feature[0]
         return x, mask_loss, pts_loss, [img_feature, pts_feature]
 

@@ -1,12 +1,6 @@
 _base_ = ['../../../configs/_base_/default_runtime.py']
 custom_imports = dict(
     imports=['projects.BEVFusion.bevfusion'], allow_failed_imports=False)
-
-# model settings
-# Voxel size for voxel encoder
-# Usually voxel size is changed consistently with the point cloud range
-# If point cloud range is modified, do remember to change all related
-# keys in the config.
 voxel_size = [0.075, 0.075, 0.2]
 point_cloud_range = [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
 class_names = [
@@ -27,27 +21,13 @@ data_prefix = dict(
     CAM_BACK_LEFT='samples/CAM_BACK_LEFT',
     sweeps='sweeps/LIDAR_TOP')
 input_modality = dict(use_lidar=True, use_camera=True)
-# backend_args = dict(
-#     backend='petrel',
-#     path_mapping=dict({
-#         './data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         './data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/',
-#         'data/nuscenes_mini/':
-#         's3://openmmlab/datasets/detection3d/nuscenes/'
-#     }))
 backend_args = None
-hybrid_query = False
-multi_value = 'sum'
+
 model = dict(
     type='BEVFusion',
     freeze_img=False,
     freeze_pts=False,
     sep_fg=True,
-    use_pts_feat=True,
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
@@ -134,19 +114,6 @@ model = dict(
         zbound=[-10.0, 10.0, 20.0],
         dbound=[1.0, 60.0, 0.5],
         downsample=2),
-    img_backbone_decoder=dict(
-        type='GeneralizedResNet',
-        in_channels=80,
-        blocks=((2, 128, 2),
-                (2, 256, 2),
-                (2, 512, 1))),
-    img_neck_decoder=dict(
-        type='LSSFPN',
-        in_indices=[-1, 0],
-        in_channels=[512, 128],
-        out_channels=256,
-        scale_factor=2),
-    
     fusion_layer=dict(
         type='DeformableTransformer',
         mask_img=True,
@@ -175,10 +142,8 @@ model = dict(
             ),
     
     bbox_head=dict(
-        type='RobustHead',
+        type='TransFusionHead',
         num_proposals=200,
-        hybrid_query=hybrid_query,
-        multi_value=multi_value,
         auxiliary=True,
         in_channels=512,
         hidden_channel=128,
@@ -187,7 +152,7 @@ model = dict(
         bn_momentum=0.1,
         num_decoder_layers=1,
         decoder_layer=dict(
-            type='CMTransformerDecoderLayer',
+            type='TransformerDecoderLayer',
             self_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             cross_attn_cfg=dict(embed_dims=128, num_heads=8, dropout=0.1),
             ffn_cfg=dict(
@@ -198,10 +163,7 @@ model = dict(
                 act_cfg=dict(type='ReLU', inplace=True),
             ),
             norm_cfg=dict(type='LN'),
-            pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128),
-            hybrid_query=hybrid_query,
-            multi_value=multi_value,
-            with_cp=True),
+            pos_encoding_cfg=dict(input_channel=2, num_pos_feats=128)),
         train_cfg=dict(
             dataset='nuScenes',
             point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
@@ -441,7 +403,7 @@ val_evaluator = dict(
     backend_args=backend_args)
 test_evaluator = val_evaluator
 
-vis_backends = [dict(type='LocalVisBackend')]
+vis_backends = [dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')]
 visualizer = dict(
     type='Det3DLocalVisualizer', vis_backends=vis_backends, name='visualizer')
 
@@ -508,5 +470,5 @@ log_processor = dict(window_size=50)
 
 default_hooks = dict(
     logger=dict(type='LoggerHook', interval=50),
-    checkpoint=dict(type='CheckpointHook', interval=5))
+    checkpoint=dict(type='CheckpointHook', interval=1))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]

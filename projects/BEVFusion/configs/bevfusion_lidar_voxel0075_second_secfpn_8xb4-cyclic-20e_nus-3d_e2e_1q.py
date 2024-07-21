@@ -40,8 +40,8 @@ input_modality = dict(use_lidar=True, use_camera=True)
 #         's3://openmmlab/datasets/detection3d/nuscenes/'
 #     }))
 backend_args = None
-hybrid_query = True
-multi_value = False
+hybrid_query = False
+multi_value = 'sum'
 model = dict(
     type='BEVFusion',
     freeze_img=False,
@@ -176,7 +176,7 @@ model = dict(
     
     bbox_head=dict(
         type='RobustHead',
-        num_proposals=400,
+        num_proposals=200,
         hybrid_query=hybrid_query,
         multi_value=multi_value,
         auxiliary=True,
