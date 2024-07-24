@@ -105,6 +105,7 @@ class DeformableTransformer(nn.Module):
             self._pred = nn.Conv2d(pts_channels, img_channels, kernel_size=1)
         if self.residual == 'concat':
             self.P_integration = ConvBNReLU(2 * pts_channels, pts_channels, kernel_size = 1, norm_layer=nn.BatchNorm2d, activation_layer=None)
+        self.reconstruction = kwargs.get("reconstruction", True)
         self.initialize_weights()
         
     def initialize_weights(self):
@@ -217,31 +218,33 @@ class DeformableTransformer(nn.Module):
             if self.residual == 'sum':
                 pts_feat += residual_pts
         
-        if _mask and inputs[0].requires_grad and self.mask_pts:
-            pts_feat = pts_feat.flatten(2).transpose(1, 2)         
-            if fg_bg_mask_list is not None:
-                device=pts_feat.device
-                fg_mask, bg_mask = fg_bg_mask_list
-                fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
-                fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
-                fg_loss = (pts_feat - pts_target) ** 2 * fg_mask
-                bg_loss = (pts_feat - pts_target) ** 2 * bg_mask
-                bg_loss = 0.2 * bg_loss
-                bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
-                fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
-                if (fg_mask.squeeze()*pts_mask).sum() == 0:
-                    fg_loss = (fg_loss * pts_mask).sum()
+        
+        if self.reconstruction:
+            if _mask and inputs[0].requires_grad and self.mask_pts:
+                pts_feat = pts_feat.flatten(2).transpose(1, 2)         
+                if fg_bg_mask_list is not None:
+                    device=pts_feat.device
+                    fg_mask, bg_mask = fg_bg_mask_list
+                    fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
+                    fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
+                    fg_loss = (pts_feat - pts_target) ** 2 * fg_mask
+                    bg_loss = (pts_feat - pts_target) ** 2 * bg_mask
+                    bg_loss = 0.2 * bg_loss
+                    bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    if (fg_mask.squeeze()*pts_mask).sum() == 0:
+                        fg_loss = (fg_loss * pts_mask).sum()
+                    else:
+                        fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
+                    bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
+                    pts_fg_loss = self.loss_weight * fg_loss
+                    pts_bg_loss = self.loss_weight * bg_loss
+                    pts_feat = pts_feat.transpose(1,2).reshape(1,256,180,180)
                 else:
-                    fg_loss = (fg_loss * pts_mask).sum() / (fg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
-                bg_loss = (bg_loss * pts_mask).sum() / (bg_mask.squeeze()*pts_mask).sum()  # mean loss on removed patches
-                pts_fg_loss = self.loss_weight * fg_loss
-                pts_bg_loss = self.loss_weight * bg_loss
-                pts_feat = pts_feat.transpose(1,2).reshape(1,256,180,180)
-            else:
-                loss = (pts_feat - pts_target) ** 2
-                loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-                loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
-                pts_loss = self.loss_weight * loss
+                    loss = (pts_feat - pts_target) ** 2
+                    loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    loss = (loss * pts_mask).sum() / pts_mask.sum()  # mean loss on removed patches
+                    pts_loss = self.loss_weight * loss
         ## img        
         if _mask and inputs[0].requires_grad and self.mask_img:
             if self.mask_method == 'random_patch':
@@ -274,47 +277,50 @@ class DeformableTransformer(nn.Module):
             if self.residual == 'sum':
                 img_feat += residual_img
         
-        if _mask and img_feat.requires_grad and self.mask_img:
-            img_feat = img_feat.flatten(2).transpose(1, 2)         
-            if fg_bg_mask_list is not None:
-                device=img_feat.device
-                fg_mask, bg_mask = fg_bg_mask_list
-                fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
-                fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
-                fg_loss = (img_feat - img_target) ** 2 * fg_mask
-                bg_loss = (img_feat - img_target) ** 2 * bg_mask
-                bg_loss = 0.2 * bg_loss
-                bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
-                fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
-                if (fg_mask.squeeze()*img_mask).sum() == 0:
-                    fg_loss = (fg_loss * img_mask).sum()
+        if self.reconstruction:
+            if _mask and img_feat.requires_grad and self.mask_img:
+                img_feat = img_feat.flatten(2).transpose(1, 2)         
+                if fg_bg_mask_list is not None:
+                    device=img_feat.device
+                    fg_mask, bg_mask = fg_bg_mask_list
+                    fg_mask, bg_mask = fg_mask.to(device), bg_mask.to(device)
+                    fg_mask, bg_mask = fg_mask.flatten(2).transpose(1,2), bg_mask.flatten(2).transpose(1,2)
+                    fg_loss = (img_feat - img_target) ** 2 * fg_mask
+                    bg_loss = (img_feat - img_target) ** 2 * bg_mask
+                    bg_loss = 0.2 * bg_loss
+                    bg_loss = bg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    fg_loss = fg_loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    if (fg_mask.squeeze()*img_mask).sum() == 0:
+                        fg_loss = (fg_loss * img_mask).sum()
+                    else:
+                        fg_loss = (fg_loss * img_mask).sum() / (fg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
+                    bg_loss = (bg_loss * img_mask).sum() / (bg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
+                    img_fg_loss = self.loss_weight * fg_loss
+                    img_bg_loss = self.loss_weight * bg_loss
+                    img_feat = img_feat.transpose(1,2).reshape(1,80,180,180)
                 else:
-                    fg_loss = (fg_loss * img_mask).sum() / (fg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
-                bg_loss = (bg_loss * img_mask).sum() / (bg_mask.squeeze()*img_mask).sum()  # mean loss on removed patches
-                img_fg_loss = self.loss_weight * fg_loss
-                img_bg_loss = self.loss_weight * bg_loss
-                img_feat = img_feat.transpose(1,2).reshape(1,80,180,180)
-            else:
-                loss = (img_feat - img_target) ** 2
-                loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
-                loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
-                img_loss = self.loss_weight * loss
-        if _mask and inputs[0].requires_grad:
-            loss_list = dict()
-            if fg_bg_mask_list is not None:
-                if self.mask_pts:
-                    loss_list['pts_fg_loss'] = pts_fg_loss
-                    loss_list['pts_bg_loss'] = pts_bg_loss
-                if self.mask_img:
-                    loss_list['img_fg_loss'] = img_fg_loss
-                    loss_list['img_bg_loss'] = img_bg_loss
-                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
-            else:
-                if self.mask_pts:
-                    loss_list['pts_loss'] = pts_loss
-                if self.mask_img:
-                    loss_list['img_loss'] = img_loss
-                return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
+                    loss = (img_feat - img_target) ** 2
+                    loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+                    loss = (loss * img_mask).sum() / img_mask.sum()  # mean loss on removed patches
+                    img_loss = self.loss_weight * loss
+                    
+        if self.reconstruction:
+            if _mask and inputs[0].requires_grad:
+                loss_list = dict()
+                if fg_bg_mask_list is not None:
+                    if self.mask_pts:
+                        loss_list['pts_fg_loss'] = pts_fg_loss
+                        loss_list['pts_bg_loss'] = pts_bg_loss
+                    if self.mask_img:
+                        loss_list['img_fg_loss'] = img_fg_loss
+                        loss_list['img_bg_loss'] = img_bg_loss
+                    return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
+                else:
+                    if self.mask_pts:
+                        loss_list['pts_loss'] = pts_loss
+                    if self.mask_img:
+                        loss_list['img_loss'] = img_loss
+                    return self.conv(torch.cat([img_feat, pts_feat], dim=1)), loss_list
         return self.conv(torch.cat([img_feat, pts_feat], dim=1)), False
 
 
@@ -1970,15 +1976,9 @@ class RobustHead(TransFusionHead):
             self.query_labels = torch.cat([f_query_labels, i_query_labels, p_query_labels], dim=-1)
         else:
             f_query_feat, f_key_feat, f_query_pos, f_dense_heatmap, f_heatmap, f_top_proposals_index, f_query_labels = self.query_init(inputs, 'fusion')
+            i_query_feat, i_key_feat, i_query_pos, i_dense_heatmap, i_heatmap, i_top_proposals_index, i_query_labels = self.query_init(cm_feat[0], 'image')
+            p_query_feat, p_key_feat, p_query_pos, p_dense_heatmap, p_heatmap, p_top_proposals_index, p_query_labels = self.query_init(cm_feat[1], 'pts')
             self.query_labels = f_query_labels
-            _i_key_feat = self.shared_conv_img(cm_feat[0])
-            _p_key_feat = self.shared_conv_pts(cm_feat[1])
-            i_key_feat = _i_key_feat.view(batch_size,
-                                               _i_key_feat.shape[1],
-                                               -1)  # [BS, C, H*W]
-            p_key_feat = _p_key_feat.view(batch_size,
-                                               _p_key_feat.shape[1],
-                                               -1)  # [BS, C, H*W]
         bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(inputs.device)
         
         #################################
@@ -1995,12 +1995,18 @@ class RobustHead(TransFusionHead):
                     key=[f_key_feat, i_key_feat, p_key_feat],
                     query_pos=[f_query_pos, i_query_pos, p_query_pos],
                     key_pos=bev_pos)
-            else:
+            elif self.multi_value:
                 query_feat = self.decoder[i](
                     f_query_feat,
                     key=[f_key_feat, i_key_feat, p_key_feat],
                     query_pos=f_query_pos,
                     key_pos=bev_pos)
+            else:
+                query_feat = self.decoder[i](
+                        f_query_feat,
+                        key=f_key_feat,
+                        query_pos=f_query_pos,
+                        key_pos=bev_pos)
 
             # Prediction
             res_layer = self.prediction_heads[i](query_feat)
@@ -2030,7 +2036,7 @@ class RobustHead(TransFusionHead):
             ret_dicts[0]['dense_heatmap'] = [f_dense_heatmap, i_dense_heatmap, p_dense_heatmap]
         else:
             ret_dicts[0]['query_heatmap_score'] = f_query_heatmap_score
-            ret_dicts[0]['dense_heatmap'] = f_dense_heatmap
+            ret_dicts[0]['dense_heatmap'] = [f_dense_heatmap, i_dense_heatmap, p_dense_heatmap]
 
         if self.auxiliary is False:
             # only return the results of last decoder layer
@@ -2355,3 +2361,133 @@ class RobustHead(TransFusionHead):
             matched_ious,
             heatmap,
         )
+        
+    def loss_by_feat(self, preds_dicts: Tuple[List[dict]],
+                     batch_gt_instances_3d: List[InstanceData], *args,
+                     **kwargs):
+        (
+            labels,
+            label_weights,
+            bbox_targets,
+            bbox_weights,
+            ious,
+            num_pos,
+            matched_ious,
+            heatmap,
+        ) = self.get_targets(batch_gt_instances_3d, preds_dicts[0])
+        if hasattr(self, 'on_the_image_mask'):
+            label_weights = label_weights * self.on_the_image_mask
+            bbox_weights = bbox_weights * self.on_the_image_mask[:, :, None]
+            num_pos = bbox_weights.max(-1).values.sum()
+        preds_dict = preds_dicts[0][0]
+        loss_dict = dict()
+        if isinstance(preds_dict['dense_heatmap'], list):
+            f_loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap'][0]).float(),
+                heatmap.float(),
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
+            )
+            i_loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap'][1]).float(),
+                heatmap.float(),
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
+            )
+            p_loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap'][2]).float(),
+                heatmap.float(),
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
+            )
+            loss_dict['f_loss_heatmap'] = f_loss_heatmap
+            loss_dict['i_loss_heatmap'] = i_loss_heatmap
+            loss_dict['p_loss_heatmap'] = p_loss_heatmap
+        else:
+            f_loss_heatmap = self.loss_heatmap(
+                clip_sigmoid(preds_dict['dense_heatmap']).float(),
+                heatmap.float(),
+                avg_factor=max(heatmap.eq(1).float().sum().item(), 1),
+            )
+            loss_heatmap = f_loss_heatmap
+            
+            loss_dict['loss_heatmap'] = loss_heatmap
+
+        # compute loss for each layer
+        for idx_layer in range(
+                self.num_decoder_layers if self.auxiliary else 1):
+            if idx_layer == self.num_decoder_layers - 1 or (
+                    idx_layer == 0 and self.auxiliary is False):
+                prefix = 'layer_-1'
+            else:
+                prefix = f'layer_{idx_layer}'
+
+            layer_labels = labels[..., idx_layer *
+                                  self.num_proposals:(idx_layer + 1) *
+                                  self.num_proposals, ].reshape(-1)
+            layer_label_weights = label_weights[
+                ..., idx_layer * self.num_proposals:(idx_layer + 1) *
+                self.num_proposals, ].reshape(-1)
+            layer_score = preds_dict['heatmap'][..., idx_layer *
+                                                self.num_proposals:(idx_layer +
+                                                                    1) *
+                                                self.num_proposals, ]
+            layer_cls_score = layer_score.permute(0, 2, 1).reshape(
+                -1, self.num_classes)
+            layer_loss_cls = self.loss_cls(
+                layer_cls_score.float(),
+                layer_labels,
+                layer_label_weights,
+                avg_factor=max(num_pos, 1),
+            )
+
+            layer_center = preds_dict['center'][..., idx_layer *
+                                                self.num_proposals:(idx_layer +
+                                                                    1) *
+                                                self.num_proposals, ]
+            layer_height = preds_dict['height'][..., idx_layer *
+                                                self.num_proposals:(idx_layer +
+                                                                    1) *
+                                                self.num_proposals, ]
+            layer_rot = preds_dict['rot'][..., idx_layer *
+                                          self.num_proposals:(idx_layer + 1) *
+                                          self.num_proposals, ]
+            layer_dim = preds_dict['dim'][..., idx_layer *
+                                          self.num_proposals:(idx_layer + 1) *
+                                          self.num_proposals, ]
+            preds = torch.cat(
+                [layer_center, layer_height, layer_dim, layer_rot],
+                dim=1).permute(0, 2, 1)  # [BS, num_proposals, code_size]
+            if 'vel' in preds_dict.keys():
+                layer_vel = preds_dict['vel'][..., idx_layer *
+                                              self.num_proposals:(idx_layer +
+                                                                  1) *
+                                              self.num_proposals, ]
+                preds = torch.cat([
+                    layer_center, layer_height, layer_dim, layer_rot, layer_vel
+                ],
+                                  dim=1).permute(
+                                      0, 2,
+                                      1)  # [BS, num_proposals, code_size]
+            code_weights = self.train_cfg.get('code_weights', None)
+            layer_bbox_weights = bbox_weights[:, idx_layer *
+                                              self.num_proposals:(idx_layer +
+                                                                  1) *
+                                              self.num_proposals, :, ]
+            layer_reg_weights = layer_bbox_weights * layer_bbox_weights.new_tensor(  # noqa: E501
+                code_weights)
+            layer_bbox_targets = bbox_targets[:, idx_layer *
+                                              self.num_proposals:(idx_layer +
+                                                                  1) *
+                                              self.num_proposals, :, ]
+            layer_loss_bbox = self.loss_bbox(
+                preds,
+                layer_bbox_targets,
+                layer_reg_weights,
+                avg_factor=max(num_pos, 1))
+
+            loss_dict[f'{prefix}_loss_cls'] = layer_loss_cls
+            loss_dict[f'{prefix}_loss_bbox'] = layer_loss_bbox
+            # loss_dict[f'{prefix}_loss_iou'] = layer_loss_iou
+
+        loss_dict['matched_ious'] = layer_loss_cls.new_tensor(matched_ious)
+
+        return loss_dict
+    
